@@ -68,20 +68,40 @@ if (fp_matrix != nullptr) {
     std::cout << "Memory Freed. Exiting Program\n";
 }
 
+void operation1(){
+    printf("Operation1\n");
+}
+
+void operation2(){
+    printf("Operation2\n");
+}
+
+void operation3(){
+    printf("Operation3\n");
+}
+
 int main(){
 
+    int input_rows, input_columns;
+    char matrix_type;
+
+    std::cout << "Welcome to 3DLUD-SIM!\n";
+
+    while(true){
     std::string filename;
     std::cout << "Enter the input file name: ";
     std::cin >> filename;
 
+    if(filename == "quit"){
+        std::cout << "Exiting 3DLUD-SIM\n";
+        break;
+    }
     std::ifstream infile(filename);
     if (!infile) {
         std::cerr << "Error: Cannot open file '" << filename << "'\n";
-        return 1;
+        continue;
     }
 
-    int input_rows, input_columns;
-    char matrix_type;
     infile >> input_rows >> input_columns >> matrix_type;
 
     if(matrix_type == 'f'){
@@ -112,21 +132,47 @@ int main(){
         return 1;
     }
     
+    // Check Input Matrix Content Read From File
     #ifdef ENABLE_DEBUG
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     while(true){
         check_inputs(matrix_type,fp_matrix,i_matrix,input_rows,input_columns);
         std::string input;
-        std::cout << "Continue Printing?\n";
+        std::cout << "Check Input: Continue Printing? (Type 'c' to continue)\n";
         std::getline(std::cin, input);
-        if(input == "q"){
+        if(input == "c"){
+            continue;
+        } else {
+            std::cout << "Exiting check_inputs()\n";
             break;
         }
     }
     #endif
+            while (true) {
+            std::string choice;
+            std::cout << "\nSelect an operation:\n";
+            std::cout << " 1 - operation1\n";
+            std::cout << " 2 - operation2\n";
+            std::cout << " 3 - operation3\n";
+            std::cout << "Type 'exit' to go back to file selection.\n";
+            std::cout << "Your choice: ";
 
-    std::cout << "Exited Printing\n";
+            std::getline(std::cin, choice);
 
+            if (choice == "exit") {
+                std::cout << "Returning to file selection.\n";
+                break;
+            } else if (choice == "1") {
+                operation1();
+            } else if (choice == "2") {
+                operation2();
+            } else if (choice == "3") {
+                operation3();
+            } else {
+                std::cout << "Invalid choice. Please enter 1, 2, 3, or exit.\n";
+            }
+        }
+}
     cleanup_mem(input_rows);
 
     return 0;
