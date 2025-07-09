@@ -3,6 +3,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 using namespace std;
 
@@ -15,7 +16,9 @@ int** i_matrix;
  
 void check_inputs(char matrix_type, float** fp_matrix, int** i_matrix,
      int input_rows, int input_columns) {
-    while(true){
+
+        static int call = 0;
+        std::cout << "check_inputs called: " << ++call << " times\n";
         std::cout << "\nMatrix type:\n";
         printf("%c\n",matrix_type);
         std::cout << "\nMatrix contents:\n";
@@ -27,6 +30,7 @@ void check_inputs(char matrix_type, float** fp_matrix, int** i_matrix,
         std::cout << "\n";
         }
         } else if (matrix_type == 'i'){
+            printf("Printing i_matrix\n");
             for (int i = 0; i < input_rows; ++i) {
                 for (int j = 0; j < input_columns; ++j) {
                 std::cout << i_matrix[i][j] << " ";
@@ -34,16 +38,10 @@ void check_inputs(char matrix_type, float** fp_matrix, int** i_matrix,
         std::cout << "\n";            
         }
         }
-        std::string input;
-        std::cout << "Continue Printing?\n";
-        std::getline(std::cin, input);
-        if(input == "q"){
-            break;
-        }
-    }
+    
 }
 
-void cleanup_mem(){
+void cleanup_mem(int input_rows){
 // deallocate i_matrix
     if (i_matrix != nullptr) {
     for (int i = 0; i < input_rows; ++i) {
@@ -51,6 +49,9 @@ void cleanup_mem(){
     }
     delete[] i_matrix;
     i_matrix = nullptr;
+    #ifdef ENABLE_DEBUG
+        printf("Deallocated i_matrix.\n");
+    #endif
     }
 
 // deallocate fp_matrix
@@ -60,7 +61,11 @@ if (fp_matrix != nullptr) {
     }
     delete[] fp_matrix;
     fp_matrix = nullptr;
+    #ifdef ENABLE_DEBUG
+        printf("Deallocated fp_matrix.\n");
+    #endif
 }
+    std::cout << "Memory Freed. Exiting Program\n";
 }
 
 int main(){
@@ -108,13 +113,21 @@ int main(){
     }
     
     #ifdef ENABLE_DEBUG
-    check_inputs(matrix_type,fp_matrix,i_matrix,input_rows,input_columns);
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    while(true){
+        check_inputs(matrix_type,fp_matrix,i_matrix,input_rows,input_columns);
+        std::string input;
+        std::cout << "Continue Printing?\n";
+        std::getline(std::cin, input);
+        if(input == "q"){
+            break;
+        }
+    }
     #endif
 
     std::cout << "Exited Printing\n";
 
-    cleanup_mem();
+    cleanup_mem(input_rows);
 
-    std::cout << "Memory Freed. Exiting Program\n";
     return 0;
 }
