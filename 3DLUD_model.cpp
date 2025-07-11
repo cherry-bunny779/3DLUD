@@ -11,14 +11,26 @@ using namespace std;
 // Defines
 #define PE_ARR_WIDTH = 16
 #define ENABLE_DEBUG
+//#define VERBOSE
 
+// DBG Defines
+//#define DisableDBG_deep_copy_2d
+
+// Global Vars
 float **fp_matrix = nullptr;
 int **i_matrix = nullptr;
+int **perm_matrix = nullptr;
+int **lmatrix_i = nullptr;
+int **umatrix_i = nullptr;
+float **lmatrix_fp = nullptr;
+float **umatrix_fp = nullptr;
+void* pivot_in = nullptr;
+void* result_matrix = nullptr;
 
 void print_matrix(char matrix_type, int **i_matrix, float **fp_matrix,
                   int input_rows, int input_columns)
 {
-#ifdef ENABLE_DEBUG
+#ifdef VERBOSE
     static int call = 0;
     std::cout << "print_matrix called: " << ++call << " times\n";
     std::cout << "\nMatrix type:\n";
@@ -38,7 +50,6 @@ void print_matrix(char matrix_type, int **i_matrix, float **fp_matrix,
     }
     else if (matrix_type == 'i')
     {
-        printf("Printing i_matrix\n");
         for (int i = 0; i < input_rows; ++i)
         {
             for (int j = 0; j < input_columns; ++j)
@@ -50,43 +61,36 @@ void print_matrix(char matrix_type, int **i_matrix, float **fp_matrix,
     }
 }
 
-void deep_copy_2d(int **src_i, float **src_f, int ***dest_i, float ***dest_f, int rows, int cols)
+void deep_copy_2d(int **src_i, float **src_f,
+                  int **&dest_i, float **&dest_f,
+                  int rows, int cols)
 {
-    if (src_i != nullptr)
-    {
-        // Allocate dest_i
-        *dest_i = new int *[rows];
-        for (int i = 0; i < rows; ++i)
-        {
-            (*dest_i)[i] = new int[cols];
-            for (int j = 0; j < cols; ++j)
-            {
-                (*dest_i)[i][j] = src_i[i][j];
+    if (src_i != nullptr) {
+        dest_i = new int *[rows];
+        for (int i = 0; i < rows; ++i) {
+            dest_i[i] = new int[cols];
+            for (int j = 0; j < cols; ++j) {
+                dest_i[i][j] = src_i[i][j];
             }
         }
-        *dest_f = nullptr;
+        dest_f = nullptr;
         std::cout << "Deep copied i_matrix.\n";
     }
-    else if (src_f != nullptr)
-    {
-        // Allocate dest_f
-        *dest_f = new float *[rows];
-        for (int i = 0; i < rows; ++i)
-        {
-            (*dest_f)[i] = new float[cols];
-            for (int j = 0; j < cols; ++j)
-            {
-                (*dest_f)[i][j] = src_f[i][j];
+    else if (src_f != nullptr) {
+        dest_f = new float *[rows];
+        for (int i = 0; i < rows; ++i) {
+            dest_f[i] = new float[cols];
+            for (int j = 0; j < cols; ++j) {
+                dest_f[i][j] = src_f[i][j];
             }
         }
-        *dest_i = nullptr;
+        dest_i = nullptr;
         std::cout << "Deep copied fp_matrix.\n";
     }
-    else
-    {
+    else {
         std::cout << "Both source matrices are nullptr — nothing to copy.\n";
-        *dest_i = nullptr;
-        *dest_f = nullptr;
+        dest_i = nullptr;
+        dest_f = nullptr;
     }
 }
 
@@ -122,7 +126,7 @@ void deallocate_2d(int **i_matrix_copy, float **fp_matrix_copy, int rows)
 void partial_pivot(
     void* input_matrix, char matrix_type, int rows, int cols,
     void** result_matrix,              // output: pivoted matrix
-    int** permutation_matrix,        // output: permutation matrix
+    int** &permutation_matrix,        // output: permutation matrix
     int& row_operations               // output: number of row swaps
 ) {
     row_operations = 0;
@@ -194,70 +198,124 @@ void partial_pivot(
     } else {
         std::cerr << "Unsupported matrix type '" << matrix_type << "'\n";
         *result_matrix = nullptr;
-        *permutation_matrix = nullptr;
+        permutation_matrix = nullptr;
     }
 }
 
-void lu_decomposition(int** A, int n, int** L, int** U, int& num_mac, int& num_subt, int& num_div) {
+void lu_decomposition(
+    int** src_i,
+    float** src_f,
+    char matrix_type,
+    int n,
+    int**& L_int,      // int version
+    int**& U_int,
+    float**& L_float,  // float version
+    float**& U_float,
+    int& num_mac,
+    int& num_subt,
+    int& num_div
+) {
     num_mac = 0;
     num_subt = 0;
     num_div = 0;
-    //printf("segfault? 1\n");
-    // Initialize L and U
-    L = new int *[n];
-    U = new int *[n];
-    for (int i = 0; i < n; ++i)
-    {
-        L[i] = new int[n];
-        U[i] = new int[n];
-    }
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            L[i][j] = 0;
-            U[i][j] = 0;
-        }
-    }
-    //printf("segfault? 2\n");
-    for (int k = 0; k < n; k++) {
-        // Compute U
-        for (int j = k; j < n; j++) {
-            int sum = 0;
-            for (int s = 0; s < k; s++){
-                sum += L[k][s] * U[s][j];
-                num_mac++;
+
+    if (matrix_type == 'i') {
+        int** A = src_i;
+        L_int = new int*[n];
+        U_int = new int*[n];
+
+        for (int i = 0; i < n; ++i) {
+            L_int[i] = new int[n];
+            U_int[i] = new int[n];
+            for (int j = 0; j < n; ++j) {
+                L_int[i][j] = 0;
+                U_int[i][j] = 0;
             }
-            U[k][j] = A[k][j] - sum;
-            num_subt++;
         }
 
-        // Set L diagonal to 1
-        L[k][k] = 1;
+        for (int k = 0; k < n; ++k) {
+            for (int j = k; j < n; ++j) {
+                int sum = 0;
+                for (int s = 0; s < k; ++s) {
+                    sum += L_int[k][s] * U_int[s][j];
+                    num_mac++;
+                }
+                U_int[k][j] = A[k][j] - sum;
+                num_subt++;
+            }
 
-        // Compute L
-        for (int i = k + 1; i < n; i++) {
-            int sum = 0;
-            for (int s = 0; s < k; s++){
-                sum += L[i][s] * U[s][k];
-                num_mac++;
+            L_int[k][k] = 1;
+
+            for (int i = k + 1; i < n; ++i) {
+                int sum = 0;
+                for (int s = 0; s < k; ++s) {
+                    sum += L_int[i][s] * U_int[s][k];
+                    num_mac++;
+                }
+                if (U_int[k][k] == 0) {
+                    std::cerr << "Zero pivot encountered at row " << k << "\n";
+                    printf("Exiting the LUD Function\n");
+                    return;
+                }
+                L_int[i][k] = (A[i][k] - sum) / U_int[k][k];
+                num_div++;
+                num_subt++;
             }
-            if (U[k][k] == 0) {
-                std::cerr << "Zero pivot encountered at row " << k << "\n";
-                exit(1);
-            }
-            L[i][k] = (A[i][k] - sum) / U[k][k];  // integer division
-            num_div++;
-            num_subt++;
         }
+
+    } else if (matrix_type == 'f') {
+        float** A = src_f;
+        L_float = new float*[n];
+        U_float = new float*[n];
+
+        for (int i = 0; i < n; ++i) {
+            L_float[i] = new float[n];
+            U_float[i] = new float[n];
+            for (int j = 0; j < n; ++j) {
+                L_float[i][j] = 0.0f;
+                U_float[i][j] = 0.0f;
+            }
+        }
+
+        for (int k = 0; k < n; ++k) {
+            for (int j = k; j < n; ++j) {
+                float sum = 0.0f;
+                for (int s = 0; s < k; ++s) {
+                    sum += L_float[k][s] * U_float[s][j];
+                    num_mac++;
+                }
+                U_float[k][j] = A[k][j] - sum;
+                num_subt++;
+            }
+
+            L_float[k][k] = 1.0f;
+
+            for (int i = k + 1; i < n; ++i) {
+                float sum = 0.0f;
+                for (int s = 0; s < k; ++s) {
+                    sum += L_float[i][s] * U_float[s][k];
+                    num_mac++;
+                }
+                if (U_float[k][k] == 0.0f) {
+                    std::cerr << "Zero pivot encountered at row " << k << "\n";
+                    exit(1);
+                }
+                L_float[i][k] = (A[i][k] - sum) / U_float[k][k];
+                num_div++;
+                num_subt++;
+            }
+        }
+
+    } else {
+        std::cerr << "Invalid matrix type '" << matrix_type << "' (use 'i' or 'f')\n";
+        exit(1);
     }
 }
 
-void cleanup_mem(int input_rows)
-{
+void cleanup_mem(int input_rows) {
     // deallocate i_matrix
-    if (i_matrix != nullptr)
-    {
-        for (int i = 0; i < input_rows; ++i)
-        {
+    if (i_matrix != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
             delete[] i_matrix[i];
         }
         delete[] i_matrix;
@@ -266,55 +324,80 @@ void cleanup_mem(int input_rows)
     }
 
     // deallocate fp_matrix
-    if (fp_matrix != nullptr)
-    {
-        for (int i = 0; i < input_rows; ++i)
-        {
+    if (fp_matrix != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
             delete[] fp_matrix[i];
         }
         delete[] fp_matrix;
         fp_matrix = nullptr;
         printf("Deallocated fp_matrix.\n");
     }
+
+    // deallocate perm_matrix
+    if (perm_matrix != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
+            delete[] perm_matrix[i];
+        }
+        delete[] perm_matrix;
+        perm_matrix = nullptr;
+        printf("Deallocated perm_matrix.\n");
+    }
+
+    // deallocate lmatrix_i
+    if (lmatrix_i != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
+            delete[] lmatrix_i[i];
+        }
+        delete[] lmatrix_i;
+        lmatrix_i = nullptr;
+        printf("Deallocated lmatrix_i.\n");
+    }
+
+    // deallocate umatrix_i
+    if (umatrix_i != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
+            delete[] umatrix_i[i];
+        }
+        delete[] umatrix_i;
+        umatrix_i = nullptr;
+        printf("Deallocated umatrix_i.\n");
+    }
+
+    // deallocate lmatrix_fp
+    if (lmatrix_fp != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
+            delete[] lmatrix_fp[i];
+        }
+        delete[] lmatrix_fp;
+        lmatrix_fp = nullptr;
+        printf("Deallocated lmatrix_fp.\n");
+    }
+
+    // deallocate umatrix_fp
+    if (umatrix_fp != nullptr) {
+        for (int i = 0; i < input_rows; ++i) {
+            delete[] umatrix_fp[i];
+        }
+        delete[] umatrix_fp;
+        umatrix_fp = nullptr;
+        printf("Deallocated umatrix_fp.\n");
+    }
+
+    // deallocate pivot_in if allocated (void*)
+    if (pivot_in != nullptr) {
+        delete[] static_cast<char*>(pivot_in); // treat as block of memory
+        pivot_in = nullptr;
+        printf("Deallocated pivot_in.\n");
+    }
+
+    // deallocate result_matrix if allocated (void*)
+    if (result_matrix != nullptr) {
+        delete[] static_cast<char*>(result_matrix); // treat as block of memory
+        result_matrix = nullptr;
+        printf("Deallocated result_matrix.\n");
+    }
+
     std::cout << "Memory Freed. Exiting Program\n";
-}
-
-// [To-Do] no cast needed, optimize
-void cleanup_pivot(void* result_matrix, int** permutation_matrix, char matrix_type, int rows) {
-    if (result_matrix == nullptr) {
-        std::cout << "result_matrix is nullptr — nothing to deallocate.\n";
-        return;
-    }
-
-    if (matrix_type == 'i') {
-        int** res = static_cast<int**>(result_matrix);
-        //int** perm = static_cast<int**>(permutation_matrix);
-
-        for (int i = 0; i < rows; ++i) {
-            delete[] res[i];
-            delete[] permutation_matrix[i];
-        }
-        delete[] res;
-        delete[] permutation_matrix;
-
-        std::cout << "Deallocated int matrices.\n";
-
-    } else if (matrix_type == 'f') {
-        float** res = static_cast<float**>(result_matrix);
-        //float** perm = static_cast<float**>(permutation_matrix);
-
-        for (int i = 0; i < rows; ++i) {
-            delete[] res[i];
-            delete[] permutation_matrix[i];
-        }
-        delete[] res;
-        delete[] permutation_matrix;
-
-        std::cout << "Deallocated float matrices.\n";
-
-    } else {
-        std::cerr << "Unsupported matrix type '" << matrix_type << "'\n";
-    }
 }
 
 void operation1()
@@ -441,11 +524,6 @@ int main()
             else if (choice == "1")
             {
                 operation1();
-                void* pivot_in = nullptr;
-                void* result_matrix = nullptr;
-                int** perm_matrix = nullptr;
-                int** lmatrix = nullptr;
-                int** umatrix = nullptr;
                 int num_row_ops,num_mac,num_subt,num_div;
                 if(matrix_type == 'i'){ // this wrapper is needed for partial_pivot(). could use some optimization
                     pivot_in = static_cast<void*>(i_matrix);
@@ -455,21 +533,30 @@ int main()
                     std::cerr << "Unsupported matrix type '" << matrix_type << "'\n";
                 }
                 partial_pivot(pivot_in,matrix_type,input_rows,input_columns,&result_matrix,perm_matrix,num_row_ops);
+                #ifdef VERBOSE
                 printf("Printing pivoted matrix\n");
                 print_matrix(matrix_type,static_cast<int**>(result_matrix),static_cast<float**>(result_matrix),input_rows,input_columns);
+                printf("\nPrinting Permutation Matrix\n");
+                print_matrix('i',perm_matrix,nullptr,input_rows,input_columns);
                 printf("\nv.s. Original Input\n");
                 print_matrix(matrix_type,i_matrix,fp_matrix,input_rows,input_columns);
-                printf("\nNumber of Row Operations\n%i\n",num_row_ops);
-                // int** A_int = static_cast<int**>(result_matrix);
-                // cleanup_pivot(result_matrix,perm_matrix,matrix_type,input_rows); // results in segfault. perm_matrix broken[To-Do]
-                lu_decomposition(i_matrix,input_rows,lmatrix,umatrix,num_mac,num_subt,num_div);
-                printf("\nNumber of Operations by Type:\nMAC: %i\nSubtraction: %i\nDivision: %i\n",num_mac,num_subt,num_div);
-                #ifdef VERBOSE
-                printf("\nL Matrix\n");
-                print_matrix('i',lmatrix,fp_matrix,input_rows,input_columns);
-                printf("\nU Matrix\n");
-                print_matrix('i',umatrix,fp_matrix,input_rows,input_columns);
                 #endif
+                printf("\nPivoting: Number of Row Operations\n%i\n",num_row_ops);
+                lu_decomposition(i_matrix,fp_matrix,matrix_type,input_rows,lmatrix_i,umatrix_i,lmatrix_fp,umatrix_fp,num_mac,num_subt,num_div);
+                printf("\nNumber of Operations by Type:\nMAC: %i\nSubtraction: %i\nDivision: %i\n",num_mac,num_subt,num_div);
+                if(matrix_type == 'i'){
+                    printf("\nL Matrix\n");
+                    print_matrix('i',lmatrix_i,lmatrix_fp,input_rows,input_columns);
+                    printf("\nU Matrix\n");
+                    print_matrix('i',umatrix_i,umatrix_fp,input_rows,input_columns);
+                } else if(matrix_type == 'f'){
+                    printf("\nL Matrix\n");
+                    print_matrix('f',lmatrix_i,lmatrix_fp,input_rows,input_columns);
+                    printf("\nU Matrix\n");
+                    print_matrix('f',umatrix_i,umatrix_fp,input_rows,input_columns);
+                } else {
+                    std::cerr << "Unsupported matrix type '" << matrix_type << "'\n";
+                }
                 
             }
             else if (choice == "2")
@@ -482,12 +569,14 @@ int main()
             }
             else if (choice == "dbg")
             {
+                #ifndef DisableDBG_deep_copy_2d
                 printf("Debug deep_copy_2d\n");
                 float **fp_matrix_copy;
                 int **i_matrix_copy;
-                deep_copy_2d(i_matrix, fp_matrix, &i_matrix_copy, &fp_matrix_copy, input_rows, input_columns);
+                deep_copy_2d(i_matrix, fp_matrix, i_matrix_copy, fp_matrix_copy, input_rows, input_columns);
                 print_matrix(matrix_type, i_matrix_copy, fp_matrix_copy, input_rows, input_columns);
                 deallocate_2d(i_matrix_copy, fp_matrix_copy, input_rows);
+                #endif
             }
             else
             {
