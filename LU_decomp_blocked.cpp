@@ -103,24 +103,3 @@ void free_2d(float **A, int size) {
     }
     delete[] A;
 }
-
-/*
-int main() {
-    int size = 512;
-    int b_size = 8;
-
-    float **A = allocate_2d(size);
-
-    init(A, size);
-    printf("Before\n");
-    display(A, size);
-
-    LU_Decomposition(A, size, b_size);
-
-    printf("After\n");
-    display(A, size);
-
-    free_2d(A, size);
-    return 0;
-}
-*/

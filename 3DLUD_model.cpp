@@ -563,11 +563,12 @@ int main()
             {
                 operation2();
                 float **fp_matrix_copy;
-                int **i_matrix_copy; // 
+                int **i_matrix_copy = nullptr;
                 deep_copy_2d(nullptr,fp_matrix,i_matrix_copy,fp_matrix_copy,input_rows,input_columns);
                 printf("\nComputing Blocked LUD\n");
                 LU_Decomposition(fp_matrix_copy,input_rows,4);
                 print_matrix('f',nullptr,fp_matrix_copy,input_rows,input_columns);
+                deallocate_2d(i_matrix_copy,fp_matrix_copy,input_rows);
             }
             else if (choice == "3")
             {
