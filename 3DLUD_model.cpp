@@ -564,10 +564,12 @@ int main()
                 operation2();
                 float **fp_matrix_copy;
                 int **i_matrix_copy = nullptr;
+                int num_div,num_mac,num_subt;
                 deep_copy_2d(nullptr,fp_matrix,i_matrix_copy,fp_matrix_copy,input_rows,input_columns);
                 printf("\nComputing Blocked LUD\n");
-                LU_Decomposition(fp_matrix_copy,input_rows,4);
+                LU_Decomposition(fp_matrix_copy,input_rows,4,num_div,num_mac,num_subt);
                 print_matrix('f',nullptr,fp_matrix_copy,input_rows,input_columns);
+                printf("\nNumber of Operations by Type:\nMAC: %i\nSubtraction: %i\nDivision: %i\n",num_mac,num_subt,num_div);
                 deallocate_2d(i_matrix_copy,fp_matrix_copy,input_rows);
             }
             else if (choice == "3")

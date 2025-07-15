@@ -3,7 +3,7 @@
 
 // LU decomposition of a square matrix A[size][size] with block size b_size
 // Modifies A in-place into its LU factors
-void LU_Decomposition(float **&A, int size, int b_size);
+void LU_Decomposition(float **&A, int size, int b_size, int &num_div, int &num_mac, int &num_subt);
 
 // Initializes A[size][size] with random values
 void init(float **A, int size);
