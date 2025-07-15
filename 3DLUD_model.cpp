@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <limits>
 #include <iomanip>
+#include "LU_decomp_blocked.h"
 
 using namespace std;
 
@@ -507,8 +508,8 @@ int main()
         {
             std::string choice;
             std::cout << "\nSelect an operation:\n";
-            std::cout << " 1 - operation1\n";
-            std::cout << " 2 - operation2\n";
+            std::cout << " 1 - LUD (no pivoting)\n";
+            std::cout << " 2 - Block LUD (no pivoting)\n";
             std::cout << " 3 - operation3\n";
             std::cout << " dbg\n";
             std::cout << "Type 'exit' to go back to file selection.\n";
@@ -523,7 +524,6 @@ int main()
             }
             else if (choice == "1")
             {
-                operation1();
                 int num_row_ops,num_mac,num_subt,num_div;
                 if(matrix_type == 'i'){ // this wrapper is needed for partial_pivot(). could use some optimization
                     pivot_in = static_cast<void*>(i_matrix);
@@ -562,6 +562,12 @@ int main()
             else if (choice == "2")
             {
                 operation2();
+                float **fp_matrix_copy;
+                int **i_matrix_copy; // 
+                deep_copy_2d(nullptr,fp_matrix,i_matrix_copy,fp_matrix_copy,input_rows,input_columns);
+                printf("\nComputing Blocked LUD\n");
+                LU_Decomposition(fp_matrix_copy,input_rows,4);
+                print_matrix('f',nullptr,fp_matrix_copy,input_rows,input_columns);
             }
             else if (choice == "3")
             {
