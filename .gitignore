@@ -1,2 +1,3 @@
 3DLUD_model
 *.o
+.DS_Store
