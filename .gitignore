@@ -1,3 +1,4 @@
 3DLUD_model
 *.o
 .DS_Store
+block_lu_sim
