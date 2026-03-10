@@ -31,20 +31,24 @@ void printUsage(const char* program_name) {
     std::cout << "  -write <cycles> Memory write delay in cycles (default: 5)\n";
     std::cout << "  -seed <value>  Random seed for matrix generation (default: 42)\n";
     std::cout << "  -v             Enable verbose mode (cycle-by-cycle trace)\n";
+    std::cout << "  -pipeline      Enable pipelined Case 4 execution (row-wise skewed systolic)\n";
     std::cout << "  -h, --help     Show this help message\n\n";
     std::cout << "3D Options:\n";
     std::cout << "  -3d            Enable 3D simulation mode\n";
     std::cout << "  -z <layers>    Number of Z layers (default: 4)\n";
     std::cout << "  -tsv <cycles>  TSV latency per hop in cycles (default: 1)\n\n";
     std::cout << "Comparison Modes:\n";
-    std::cout << "  -compare       Run both 2D and 3D with same PE array, print comparison\n";
-    std::cout << "  -equal-pe      Equal PE budget comparison: 2D (p x p) vs 3D ((p/sqrt(Z)) x (p/sqrt(Z)) x Z)\n";
-    std::cout << "                 Requires: Z is a perfect square and sqrt(Z) divides p\n\n";
+    std::cout << "  -compare          Run both 2D and 3D with same PE array, print comparison\n";
+    std::cout << "  -compare-pipeline Compare pipelined vs non-pipelined 2D execution\n";
+    std::cout << "  -equal-pe         Equal PE budget: 2D (p x p) vs 3D ((p/sqrt(Z)) x (p/sqrt(Z)) x Z)\n";
+    std::cout << "                    Requires: Z is a perfect square and sqrt(Z) divides p\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -mac 1 -div 10 -v\n";
+    std::cout << "  " << program_name << " -n 64 -p 8 -pipeline          # Enable pipelined trailing update\n";
+    std::cout << "  " << program_name << " -n 64 -p 8 -compare-pipeline  # Compare pipelined vs non-pipelined\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -3d -z 4\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -compare -z 4\n";
-    std::cout << "  " << program_name << " -n 64 -p 8 -equal-pe -z 4   # 2D: 8x8=64 PEs, 3D: 4x4x4=64 PEs\n\n";
+    std::cout << "  " << program_name << " -n 64 -p 8 -equal-pe -z 4     # 2D: 8x8=64 PEs, 3D: 4x4x4=64 PEs\n\n";
 }
 
 void printComparison(const SimStats& stats_2d, const SimStats3D& stats_3d, 
@@ -191,6 +195,7 @@ void printEqualPEComparison(const SimStats& stats_2d, const SimStats3D& stats_3d
     std::cout << "Algorithm Granularity:\n";
     std::cout << "    2D blocks: n/b = n/" << block_2d << " blocks per dimension\n";
     std::cout << "    3D blocks: n/b = n/" << block_3d << " blocks per dimension\n";
+    std::cout << "    (Smaller blocks = more blocks = more parallelism potential)\n\n";
     
     // TSV overhead
     std::cout << "3D-Specific Overhead:\n";
@@ -202,7 +207,106 @@ void printEqualPEComparison(const SimStats& stats_2d, const SimStats3D& stats_3d
     
     // Summary
     std::cout << "\n------------------------------------------------------------------------\n";
+    std::cout << "CONCLUSION: With equal silicon budget (" << total_pes << " PEs),\n";
+    if (speedup > 1.05) {
+        std::cout << "    3D stacking is " << std::setprecision(2) << speedup << "x FASTER than 2D.\n";
+        std::cout << "    The layer parallelism outweighs the smaller per-layer PE array.\n";
+    } else if (speedup < 0.95) {
+        std::cout << "    2D is " << std::setprecision(2) << (1.0/speedup) << "x FASTER than 3D stacking.\n";
+        std::cout << "    The larger PE array outweighs the layer parallelism benefit.\n";
+    } else {
+        std::cout << "    2D and 3D have similar performance.\n";
+    }
+    std::cout << "========================================================================\n";
+}
 
+void printPipelineComparison(const SimStats& stats_seq, const SimStats& stats_pipe,
+                              uint32_t matrix_size, uint32_t pe_size, uint32_t block_size) {
+    std::cout << "\n";
+    std::cout << "========================================================================\n";
+    std::cout << "          Pipelined vs Non-Pipelined Comparison Results                \n";
+    std::cout << "========================================================================\n";
+    std::cout << "\n";
+    
+    std::cout << "Configuration:\n";
+    std::cout << "    Matrix size:   " << matrix_size << " x " << matrix_size << "\n";
+    std::cout << "    PE array:      " << pe_size << " x " << pe_size << "\n";
+    std::cout << "    Block size:    " << block_size << " x " << block_size << "\n\n";
+    
+    // Total cycles
+    double speedup = static_cast<double>(stats_seq.total_cycles) / 
+                     std::max(stats_pipe.total_cycles, (uint64_t)1);
+    std::cout << "Total Cycles:\n";
+    std::cout << "    Sequential:  " << std::setw(12) << stats_seq.total_cycles << "\n";
+    std::cout << "    Pipelined:   " << std::setw(12) << stats_pipe.total_cycles << "\n";
+    std::cout << "    Speedup:     " << std::fixed << std::setprecision(2) << std::setw(12) 
+              << speedup << "x\n\n";
+    
+    // Case breakdown
+    std::cout << "Case Breakdown (cycles):\n";
+    std::cout << "                       Sequential    Pipelined     Speedup\n";
+    
+    auto calc_speedup = [](uint64_t a, uint64_t b) {
+        return static_cast<double>(a) / std::max(b, (uint64_t)1);
+    };
+    
+    std::cout << "    Case 1 (diag):   " << std::setw(10) << stats_seq.case1_cycles 
+              << "    " << std::setw(10) << stats_pipe.case1_cycles 
+              << "    " << std::setw(6) << calc_speedup(stats_seq.case1_cycles, stats_pipe.case1_cycles) << "x\n";
+    std::cout << "    Case 2 (horiz):  " << std::setw(10) << stats_seq.case2_cycles 
+              << "    " << std::setw(10) << stats_pipe.case2_cycles 
+              << "    " << std::setw(6) << calc_speedup(stats_seq.case2_cycles, stats_pipe.case2_cycles) << "x\n";
+    std::cout << "    Case 3 (vert):   " << std::setw(10) << stats_seq.case3_cycles 
+              << "    " << std::setw(10) << stats_pipe.case3_cycles 
+              << "    " << std::setw(6) << calc_speedup(stats_seq.case3_cycles, stats_pipe.case3_cycles) << "x\n";
+    std::cout << "    Case 4 (trail):  " << std::setw(10) << stats_seq.case4_cycles 
+              << "    " << std::setw(10) << stats_pipe.case4_cycles 
+              << "    " << std::setw(6) << calc_speedup(stats_seq.case4_cycles, stats_pipe.case4_cycles) << "x\n\n";
+    
+    // Case 4 improvement breakdown
+    double case4_reduction = 100.0 * (1.0 - static_cast<double>(stats_pipe.case4_cycles) / 
+                                      std::max(stats_seq.case4_cycles, (uint64_t)1));
+    std::cout << "Case 4 Improvement:\n";
+    std::cout << "    Cycle reduction: " << std::setw(10) << std::setprecision(1) 
+              << case4_reduction << "%\n";
+    std::cout << "    (Pipelining overlaps memory loads with computation)\n\n";
+    
+    // Memory cycles
+    std::cout << "Memory Cycles:\n";
+    std::cout << "    Sequential Load:  " << std::setw(10) << stats_seq.memory_load_cycles << "\n";
+    std::cout << "    Pipelined Load:   " << std::setw(10) << stats_pipe.memory_load_cycles << "\n";
+    std::cout << "    Sequential Write: " << std::setw(10) << stats_seq.memory_write_cycles << "\n";
+    std::cout << "    Pipelined Write:  " << std::setw(10) << stats_pipe.memory_write_cycles << "\n\n";
+    
+    // Utilization
+    double util_seq = (stats_seq.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_seq.total_pe_active_cycles / stats_seq.total_pe_possible_cycles) : 0.0;
+    double util_pipe = (stats_pipe.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_pipe.total_pe_active_cycles / stats_pipe.total_pe_possible_cycles) : 0.0;
+    
+    std::cout << "PE Utilization:\n";
+    std::cout << "    Sequential:  " << std::setw(12) << std::setprecision(2) << util_seq << "%\n";
+    std::cout << "    Pipelined:   " << std::setw(12) << util_pipe << "%\n\n";
+    
+    // Operations (should be identical)
+    std::cout << "Operations (should be identical):\n";
+    std::cout << "    MACs:        " << std::setw(12) << stats_seq.mac_operations 
+              << " (seq)  " << std::setw(12) << stats_pipe.mac_operations << " (pipe)\n";
+    std::cout << "    DIVs:        " << std::setw(12) << stats_seq.div_operations 
+              << " (seq)  " << std::setw(12) << stats_pipe.div_operations << " (pipe)\n";
+    
+    // Summary
+    std::cout << "\n------------------------------------------------------------------------\n";
+    std::cout << "CONCLUSION:\n";
+    if (speedup > 1.05) {
+        std::cout << "    Pipelining provides " << std::setprecision(2) << speedup 
+                  << "x speedup by overlapping memory and computation.\n";
+        std::cout << "    Case 4 (trailing update) cycles reduced by " 
+                  << std::setprecision(1) << case4_reduction << "%.\n";
+    } else {
+        std::cout << "    Pipelining provides minimal benefit for this configuration.\n";
+        std::cout << "    Consider larger matrices with more trailing blocks per row.\n";
+    }
     std::cout << "========================================================================\n";
 }
 
@@ -214,6 +318,7 @@ int main(int argc, char* argv[]) {
     bool use_3d = false;
     bool compare_mode = false;
     bool equal_pe_mode = false;
+    bool compare_pipeline_mode = false;
     uint32_t num_layers = 4;
     uint32_t tsv_latency = 1;
     
@@ -248,6 +353,9 @@ int main(int argc, char* argv[]) {
         else if (strcmp(argv[i], "-v") == 0) {
             config.verbose = true;
         }
+        else if (strcmp(argv[i], "-pipeline") == 0) {
+            config.pipeline_enabled = true;
+        }
         else if (strcmp(argv[i], "-3d") == 0) {
             use_3d = true;
         }
@@ -261,6 +369,9 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(argv[i], "-compare") == 0) {
             compare_mode = true;
+        }
+        else if (strcmp(argv[i], "-compare-pipeline") == 0) {
+            compare_pipeline_mode = true;
         }
         else if (strcmp(argv[i], "-equal-pe") == 0) {
             equal_pe_mode = true;
@@ -293,6 +404,39 @@ int main(int argc, char* argv[]) {
     if ((use_3d || compare_mode) && num_layers == 0) {
         std::cerr << "Error: Number of layers must be > 0\n";
         return 1;
+    }
+    
+    // Pipeline comparison mode (2D only: sequential vs pipelined)
+    if (compare_pipeline_mode) {
+        std::cout << "========================================\n";
+        std::cout << "Pipeline Comparison: Sequential vs Pipelined\n";
+        std::cout << "========================================\n\n";
+        
+        // Run sequential (non-pipelined) simulation
+        std::cout << "=== Running Sequential (Non-Pipelined) Simulation ===\n";
+        SimConfig config_seq = config;
+        config_seq.pipeline_enabled = false;
+        BlockLUSimulator sim_seq(config_seq);
+        sim_seq.initializeRandom(seed);
+        sim_seq.run();
+        bool verified_seq = sim_seq.verify();
+        std::cout << "Verification: " << (verified_seq ? "PASSED" : "FAILED") << "\n\n";
+        
+        // Run pipelined simulation
+        std::cout << "=== Running Pipelined Simulation ===\n";
+        SimConfig config_pipe = config;
+        config_pipe.pipeline_enabled = true;
+        BlockLUSimulator sim_pipe(config_pipe);
+        sim_pipe.initializeRandom(seed);
+        sim_pipe.run();
+        bool verified_pipe = sim_pipe.verify();
+        std::cout << "Verification: " << (verified_pipe ? "PASSED" : "FAILED") << "\n";
+        
+        // Print comparison
+        printPipelineComparison(sim_seq.getStats(), sim_pipe.getStats(),
+                                config.matrix_size, config.pe_array_size, config.block_size);
+        
+        return (verified_seq && verified_pipe) ? 0 : 1;
     }
     
     // Equal PE comparison mode

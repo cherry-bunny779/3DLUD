@@ -78,3 +78,13 @@ $(BUILD_DIR)/config_3d.o: $(INC_DIR)/config_3d.hpp $(INC_DIR)/config.hpp
 $(BUILD_DIR)/pe_3d.o: $(INC_DIR)/pe_3d.hpp $(INC_DIR)/pe.hpp
 $(BUILD_DIR)/pe_array_3d.o: $(INC_DIR)/pe_array_3d.hpp $(INC_DIR)/pe_3d.hpp $(INC_DIR)/config_3d.hpp
 $(BUILD_DIR)/block_lu_simulator_3d.o: $(INC_DIR)/block_lu_simulator_3d.hpp $(INC_DIR)/pe_array_3d.hpp $(INC_DIR)/memory.hpp $(INC_DIR)/config_3d.hpp
+
+# Header dependencies - Pipelined
+$(BUILD_DIR)/pipelined_case4.o: $(INC_DIR)/pipelined_case4.hpp
+
+# Test pipelined Case 4
+test_pipeline: $(TARGET)
+	./$(TARGET) -n 16 -p 4 -b 4 -pipeline
+
+compare_pipeline: $(TARGET)
+	./$(TARGET) -n 32 -p 8 -b 8 -compare-pipeline -z 4

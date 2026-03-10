@@ -27,6 +27,7 @@ struct SimConfig {
     
     // Output control
     bool verbose;               // Enable cycle-by-cycle trace
+    bool pipeline_enabled;      // Enable pipelined Case 4 execution
     
     // Default constructor with reasonable defaults
     SimConfig() 
@@ -38,6 +39,7 @@ struct SimConfig {
         , mem_load_delay(5)
         , mem_write_delay(5)
         , verbose(false)
+        , pipeline_enabled(false)
     {}
     
     // Validation

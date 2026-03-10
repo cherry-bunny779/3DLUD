@@ -7,7 +7,19 @@ BlockLUSimulator::BlockLUSimulator(const SimConfig& cfg)
     , pe_array(cfg)
     , memory(cfg)
     , stats()
-{}
+{
+    // Initialize pipelined processor if enabled
+    if (config.pipeline_enabled) {
+        PipelinedCase4Processor::Config pconfig;
+        pconfig.block_size = cfg.block_size;
+        pconfig.mem_load_delay = cfg.mem_load_delay;
+        pconfig.mem_write_delay = cfg.mem_write_delay;
+        pconfig.mac_latency = cfg.mac_latency;
+        pconfig.enable_overlap = true;
+        pconfig.verbose = cfg.verbose;
+        pipelined_processor = std::make_unique<PipelinedCase4Processor>(pconfig);
+    }
+}
 
 void BlockLUSimulator::initializeRandom(uint32_t seed) {
     memory.initializeRandom(seed);
@@ -120,16 +132,18 @@ uint64_t BlockLUSimulator::executeCase1(uint32_t block_k) {
         // Wait for all divisions to complete
         case_cycles += pe_array.waitUntilIdle();
         
-        // Store L values
+        // Store L values and zero out A_block column k (for U's lower triangular)
         for (uint32_t j = k + 1; j < b; j++) {
             L_block[j * b + k] = pe_array.getPE(j, k).getResult();
+            A_block[j * b + k] = 0.0f;  // Zero out for U (lower triangular part)
         }
         
-        // MAC operations: A(j,l) = A(j,l) - L(j,k) * A(k,l) for all j > k, l >= k
+        // MAC operations: A(j,l) = A(j,l) - L(j,k) * U(k,l) for all j > k, l > k
+        // Note: Column k doesn't need updating - those positions store L values
         for (uint32_t j = k + 1; j < b; j++) {
             float l_jk = L_block[j * b + k];
             
-            for (uint32_t l = k; l < b; l++) {
+            for (uint32_t l = k + 1; l < b; l++) {
                 float a_jl = A_block[j * b + l];
                 float a_kl = A_block[k * b + l];
                 
@@ -143,7 +157,7 @@ uint64_t BlockLUSimulator::executeCase1(uint32_t block_k) {
         
         // Update A_block with results
         for (uint32_t j = k + 1; j < b; j++) {
-            for (uint32_t l = k; l < b; l++) {
+            for (uint32_t l = k + 1; l < b; l++) {
                 A_block[j * b + l] = pe_array.getPE(j, l).getResult();
             }
         }
@@ -406,6 +420,84 @@ uint64_t BlockLUSimulator::executeCase4(uint32_t block_i, uint32_t block_j, uint
     
     return case_cycles;
 }
+/**
+ * Case 4 Pipelined: Process entire row of trailing blocks sharing same L
+ * 
+ * For block row i, processes all blocks (i, k+1), (i, k+2), ..., (i, P-1)
+ * using pipelined execution since they all share the same L[i,k] block.
+ */
+uint64_t BlockLUSimulator::executeCase4PipelinedRow(uint32_t block_i, uint32_t block_k, uint32_t P) {
+    log("=== Case 4 Pipelined: Row " + std::to_string(block_i) + " with k=" + std::to_string(block_k) + " ===");
+    
+    uint32_t b = config.block_size;
+    uint32_t n = config.matrix_size;
+    
+    // Number of trailing blocks in this row
+    uint32_t num_blocks = P - block_k - 1;
+    if (num_blocks == 0) return 0;
+    
+    // Get L block: L[block_i, block_k]
+    std::vector<float> L_block(b * b);
+    for (uint32_t ii = 0; ii < b; ii++) {
+        for (uint32_t jj = 0; jj < b; jj++) {
+            uint32_t row = block_i * b + ii;
+            uint32_t col = block_k * b + jj;
+            L_block[ii * b + jj] = memory.L[row * n + col];
+        }
+    }
+    
+    // Collect U blocks: U[block_k, j] for j = k+1 to P-1
+    std::vector<std::vector<float>> U_blocks(num_blocks);
+    for (uint32_t idx = 0; idx < num_blocks; idx++) {
+        uint32_t block_j = block_k + 1 + idx;
+        U_blocks[idx].resize(b * b);
+        for (uint32_t ii = 0; ii < b; ii++) {
+            for (uint32_t jj = 0; jj < b; jj++) {
+                uint32_t row = block_k * b + ii;
+                uint32_t col = block_j * b + jj;
+                U_blocks[idx][ii * b + jj] = memory.U[row * n + col];
+            }
+        }
+    }
+    
+    // Collect A blocks: A[block_i, j] for j = k+1 to P-1
+    std::vector<std::vector<float>> A_blocks(num_blocks);
+    for (uint32_t idx = 0; idx < num_blocks; idx++) {
+        uint32_t block_j = block_k + 1 + idx;
+        A_blocks[idx].resize(b * b);
+        for (uint32_t ii = 0; ii < b; ii++) {
+            for (uint32_t jj = 0; jj < b; jj++) {
+                uint32_t row = block_i * b + ii;
+                uint32_t col = block_j * b + jj;
+                A_blocks[idx][ii * b + jj] = memory.A[row * n + col];
+            }
+        }
+    }
+    
+    // Execute pipelined computation
+    pipelined_processor->resetStats();
+    uint64_t cycles = pipelined_processor->processBlockRow(L_block, U_blocks, A_blocks);
+    
+    // Write results back to memory
+    for (uint32_t idx = 0; idx < num_blocks; idx++) {
+        uint32_t block_j = block_k + 1 + idx;
+        for (uint32_t ii = 0; ii < b; ii++) {
+            for (uint32_t jj = 0; jj < b; jj++) {
+                uint32_t row = block_i * b + ii;
+                uint32_t col = block_j * b + jj;
+                memory.A[row * n + col] = A_blocks[idx][ii * b + jj];
+            }
+        }
+    }
+    
+    // Update stats from pipelined processor
+    const auto& pstats = pipelined_processor->getStats();
+    stats.mac_operations += pstats.mac_operations;
+    stats.case4_cycles += cycles;
+    
+    log("  Case 4 Pipelined complete: " + std::to_string(num_blocks) + " blocks in " + std::to_string(cycles) + " cycles");
+    return cycles;
+}
 
 /**
  * Main simulation loop implementing block LU decomposition
@@ -429,7 +521,11 @@ void BlockLUSimulator::run() {
     std::cout << "Matrix size: " << config.matrix_size << "x" << config.matrix_size << "\n";
     std::cout << "Block size: " << config.block_size << "\n";
     std::cout << "Number of blocks: " << P << "x" << P << "\n";
-    std::cout << "PE array size: " << config.pe_array_size << "x" << config.pe_array_size << "\n\n";
+    std::cout << "PE array size: " << config.pe_array_size << "x" << config.pe_array_size << "\n";
+    if (config.pipeline_enabled) {
+        std::cout << "Pipelined Case 4: ENABLED\n";
+    }
+    std::cout << "\n";
     
     pe_array.reset();
     stats = SimStats();
@@ -437,6 +533,7 @@ void BlockLUSimulator::run() {
     for (uint32_t k = 0; k < P; k++) {
         log("======== Block iteration k=" + std::to_string(k) + " ========");
         
+        // First, process Cases 1, 2, 3
         for (uint32_t i = k; i < P; i++) {
             for (uint32_t j = k; j < P; j++) {
                 if (i == k && j == k) {
@@ -451,8 +548,19 @@ void BlockLUSimulator::run() {
                     // Case 3: Vertical L block update
                     stats.total_cycles += executeCase3(i, k);
                 }
-                else if (i > k && j > k) {
-                    // Case 4: Trailing matrix update
+            }
+        }
+        
+        // Then, process Case 4 (trailing updates)
+        if (config.pipeline_enabled && pipelined_processor && k < P - 1) {
+            // Pipelined execution: process each row of trailing blocks
+            for (uint32_t i = k + 1; i < P; i++) {
+                stats.total_cycles += executeCase4PipelinedRow(i, k, P);
+            }
+        } else {
+            // Sequential execution
+            for (uint32_t i = k + 1; i < P; i++) {
+                for (uint32_t j = k + 1; j < P; j++) {
                     stats.total_cycles += executeCase4(i, j, k);
                 }
             }
@@ -491,6 +599,7 @@ void SimConfig::print() const {
     std::cout << "DIV latency:       " << div_latency << " cycles\n";
     std::cout << "Memory load delay: " << mem_load_delay << " cycles\n";
     std::cout << "Memory write delay:" << mem_write_delay << " cycles\n";
+    std::cout << "Pipelined Case 4:  " << (pipeline_enabled ? "ENABLED" : "DISABLED") << "\n";
     std::cout << "Verbose mode:      " << (verbose ? "ON" : "OFF") << "\n\n";
 }
 

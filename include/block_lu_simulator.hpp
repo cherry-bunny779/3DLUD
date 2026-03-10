@@ -4,6 +4,8 @@
 #include "config.hpp"
 #include "pe_array.hpp"
 #include "memory.hpp"
+#include "pipelined_case4.hpp"
+#include <memory>
 
 /**
  * Block LU Decomposition Simulator
@@ -13,6 +15,8 @@
  * - Case 2: Horizontal block update (U = solve L\A for blocks right of diagonal)
  * - Case 3: Vertical block update (L = solve A/U for blocks below diagonal)
  * - Case 4: Trailing matrix update (A = A - L*U for remaining blocks)
+ * 
+ * Optionally supports pipelined Case 4 execution for improved PE utilization.
  */
 class BlockLUSimulator {
 public:
@@ -28,6 +32,9 @@ public:
     
     // Original matrix for verification
     std::vector<float> A_original;
+    
+    // Optional pipelined processor for Case 4
+    std::unique_ptr<PipelinedCase4Processor> pipelined_processor;
     
     // Constructor
     BlockLUSimulator(const SimConfig& cfg);
@@ -52,20 +59,19 @@ public:
     
 private:
     // Case 1: LU decomposition on diagonal block (block_k, block_k)
-    // This is the sequential pivot-based decomposition within a single block
     uint64_t executeCase1(uint32_t block_k);
     
     // Case 2: Update U block at (block_k, block_j) where block_j > block_k
-    // Given L from diagonal block, compute U = L^{-1} * A
     uint64_t executeCase2(uint32_t block_k, uint32_t block_j);
     
     // Case 3: Update L block at (block_i, block_k) where block_i > block_k
-    // Given U from diagonal block, compute L = A * U^{-1}
     uint64_t executeCase3(uint32_t block_i, uint32_t block_k);
     
-    // Case 4: Update trailing block at (block_i, block_j) where block_i > block_k, block_j > block_k
-    // Compute A = A - L * U (Schur complement update)
+    // Case 4: Update trailing block at (block_i, block_j)
     uint64_t executeCase4(uint32_t block_i, uint32_t block_j, uint32_t block_k);
+    
+    // Pipelined Case 4: Process entire row of trailing blocks sharing same L
+    uint64_t executeCase4PipelinedRow(uint32_t block_i, uint32_t block_k, uint32_t P);
     
     // Helper: Load a block from memory to PE array
     uint64_t loadBlockToPEs(const std::vector<float>& block);
