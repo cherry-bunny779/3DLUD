@@ -13,12 +13,14 @@ struct SimConfig3D : public SimConfig {
     // 3D-specific parameters
     uint32_t num_layers;        // Z dimension (number of stacked layers)
     uint32_t tsv_latency;       // Latency per TSV hop (cycles)
+    uint32_t pipeline_version;  // 1 = v1 (arbitrary block assignment), 2 = v2 (row-parallel)
     
     // Default constructor
     SimConfig3D()
         : SimConfig()
         , num_layers(4)         // Default: 4 layers (as in paper)
         , tsv_latency(1)        // Default: 1 cycle per hop
+        , pipeline_version(2)   // Default: v2 (new row-parallel design)
     {}
     
     // Constructor from base config
@@ -26,6 +28,7 @@ struct SimConfig3D : public SimConfig {
         : SimConfig(base)
         , num_layers(4)
         , tsv_latency(1)
+        , pipeline_version(2)
     {}
     
     // Validation (extends base validation)

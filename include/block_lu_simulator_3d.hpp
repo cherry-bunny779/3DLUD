@@ -82,6 +82,16 @@ private:
     // Each layer computes different A[i,j] blocks
     void executeCase4_block(uint32_t block_k, uint32_t num_blocks);
     
+    // Execute Case 4 with pipelined skewed systolic timing within each layer
+    // V1 (legacy): Arbitrary block-to-layer assignment, pipeline within rows per layer
+    void executeCase4_block_pipelined_v1(uint32_t block_k, uint32_t num_blocks);
+    
+    // Execute Case 4 with spatial + temporal pipelining (ACTIVE)
+    // - Different L blocks spread across layers (spatial parallelism)
+    // - Same U block sequence streams to ALL layers simultaneously
+    // - All layers compute in parallel: layer z uses L^(k+1+z, k) with all U^(k, j) blocks
+    void executeCase4_block_pipelined(uint32_t block_k, uint32_t num_blocks);
+    
     // Helper: Execute single horizontal U block on a specific layer
     void executeSingleCase2OnLayer(uint32_t layer, uint32_t block_k, uint32_t block_j,
                                    const std::vector<std::vector<float>>& L_diag);

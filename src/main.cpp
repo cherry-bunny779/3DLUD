@@ -40,12 +40,16 @@ void printUsage(const char* program_name) {
     std::cout << "Comparison Modes:\n";
     std::cout << "  -compare          Run both 2D and 3D with same PE array, print comparison\n";
     std::cout << "  -compare-pipeline Compare pipelined vs non-pipelined 2D execution\n";
+    std::cout << "  -compare-part     Compare 2D vs 2D-Partitioned vs 3D (same total PEs)\n";
+    std::cout << "                    2D-Partitioned: p×p array split into 4 regions of (p/2)×(p/2)\n";
+    std::cout << "                    Shows benefit of spatial parallelism and TSV overhead cost\n";
     std::cout << "  -equal-pe         Equal PE budget: 2D (p x p) vs 3D ((p/sqrt(Z)) x (p/sqrt(Z)) x Z)\n";
     std::cout << "                    Requires: Z is a perfect square and sqrt(Z) divides p\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -mac 1 -div 10 -v\n";
     std::cout << "  " << program_name << " -n 64 -p 8 -pipeline          # Enable pipelined trailing update\n";
     std::cout << "  " << program_name << " -n 64 -p 8 -compare-pipeline  # Compare pipelined vs non-pipelined\n";
+    std::cout << "  " << program_name << " -n 64 -p 8 -compare-part      # 2D vs 2D-Partitioned vs 3D\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -3d -z 4\n";
     std::cout << "  " << program_name << " -n 32 -p 8 -compare -z 4\n";
     std::cout << "  " << program_name << " -n 64 -p 8 -equal-pe -z 4     # 2D: 8x8=64 PEs, 3D: 4x4x4=64 PEs\n\n";
@@ -310,6 +314,211 @@ void printPipelineComparison(const SimStats& stats_seq, const SimStats& stats_pi
     std::cout << "========================================================================\n";
 }
 
+void printPartitionedComparison(const SimStats& stats_2d,
+                                 const SimStats& stats_2d_pipe,
+                                 const SimStats3D& stats_2d_part,
+                                 const SimStats3D& stats_3d_old,
+                                 const SimStats3D& stats_3d_new,
+                                 uint32_t matrix_size,
+                                 uint32_t pe_2d, uint32_t pe_part,
+                                 uint32_t block_2d, uint32_t block_part,
+                                 uint32_t tsv_latency) {
+    std::cout << "\n";
+    std::cout << "=============================================================================================================================\n";
+    std::cout << "          2D vs 2D-Pipelined vs 2D-Partitioned vs 3D-Old vs 3D-New Comparison (Same Total PE Budget)                        \n";
+    std::cout << "=============================================================================================================================\n";
+    std::cout << "\n";
+    
+    uint32_t total_pes = pe_2d * pe_2d;
+    
+    std::cout << "Configuration:\n";
+    std::cout << "    Matrix size:       " << matrix_size << " x " << matrix_size << "\n";
+    std::cout << "    Total PE budget:   " << total_pes << " PEs\n\n";
+    
+    std::cout << "Architecture Breakdown:\n";
+    std::cout << "    ┌─────────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐\n";
+    std::cout << "    │                 │ 2D Standard  │ 2D Pipelined │ 2D Partition │ 3D Old (V1)  │ 3D New (V2)  │\n";
+    std::cout << "    ├─────────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n";
+    std::cout << "    │ PE Array        │ " << std::setw(4) << pe_2d << " x " << std::setw(4) << pe_2d 
+              << "   │ " << std::setw(4) << pe_2d << " x " << std::setw(4) << pe_2d
+              << "   │ 4x(" << std::setw(2) << pe_part << "x" << std::setw(2) << pe_part << ")    │ "
+              << std::setw(2) << pe_part << "x" << std::setw(2) << pe_part << "x4      │ "
+              << std::setw(2) << pe_part << "x" << std::setw(2) << pe_part << "x4      │\n";
+    std::cout << "    │ Block Size      │ " << std::setw(4) << block_2d << " x " << std::setw(4) << block_2d 
+              << "   │ " << std::setw(4) << block_2d << " x " << std::setw(4) << block_2d
+              << "   │ " << std::setw(4) << block_part << " x " << std::setw(4) << block_part 
+              << "   │ " << std::setw(4) << block_part << " x " << std::setw(4) << block_part 
+              << "   │ " << std::setw(4) << block_part << " x " << std::setw(4) << block_part << "   │\n";
+    std::cout << "    │ Case 4 Mode     │ Sequential   │ Skewed Pipe  │ Row-Parallel │ Arb. Assign  │ Row-Parallel │\n";
+    std::cout << "    │ Inter-region    │ N/A          │ N/A          │ 2D wire(0cy) │ TSV(" << tsv_latency << "cy/hop)│ TSV(" << tsv_latency << "cy/hop)│\n";
+    std::cout << "    └─────────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘\n\n";
+    
+    // Total cycles comparison
+    std::cout << "Performance Results:\n";
+    std::cout << "    ┌─────────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐\n";
+    std::cout << "    │ Metric          │ 2D Standard  │ 2D Pipelined │ 2D Partition │ 3D Old (V1)  │ 3D New (V2)  │\n";
+    std::cout << "    ├─────────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n";
+    
+    std::cout << "    │ Total Cycles    │ " << std::setw(12) << stats_2d.total_cycles 
+              << " │ " << std::setw(12) << stats_2d_pipe.total_cycles 
+              << " │ " << std::setw(12) << stats_2d_part.total_cycles 
+              << " │ " << std::setw(12) << stats_3d_old.total_cycles 
+              << " │ " << std::setw(12) << stats_3d_new.total_cycles << " │\n";
+    
+    // Speedups relative to 2D standard
+    double speedup_pipe = static_cast<double>(stats_2d.total_cycles) / 
+                          std::max(stats_2d_pipe.total_cycles, (uint64_t)1);
+    double speedup_part = static_cast<double>(stats_2d.total_cycles) / 
+                          std::max(stats_2d_part.total_cycles, (uint64_t)1);
+    double speedup_3d_old = static_cast<double>(stats_2d.total_cycles) / 
+                            std::max(stats_3d_old.total_cycles, (uint64_t)1);
+    double speedup_3d_new = static_cast<double>(stats_2d.total_cycles) / 
+                            std::max(stats_3d_new.total_cycles, (uint64_t)1);
+    
+    std::cout << "    │ vs 2D Speedup   │ " << std::setw(12) << "1.00x" 
+              << " │ " << std::setw(11) << std::fixed << std::setprecision(2) << speedup_pipe << "x"
+              << " │ " << std::setw(11) << speedup_part << "x"
+              << " │ " << std::setw(11) << speedup_3d_old << "x"
+              << " │ " << std::setw(11) << speedup_3d_new << "x │\n";
+    
+    std::cout << "    ├─────────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n";
+    
+    // Case breakdown
+    std::cout << "    │ Case 1 (diag)   │ " << std::setw(12) << stats_2d.case1_cycles 
+              << " │ " << std::setw(12) << stats_2d_pipe.case1_cycles 
+              << " │ " << std::setw(12) << stats_2d_part.case1_cycles 
+              << " │ " << std::setw(12) << stats_3d_old.case1_cycles 
+              << " │ " << std::setw(12) << stats_3d_new.case1_cycles << " │\n";
+    std::cout << "    │ Case 2 (horiz)  │ " << std::setw(12) << stats_2d.case2_cycles 
+              << " │ " << std::setw(12) << stats_2d_pipe.case2_cycles 
+              << " │ " << std::setw(12) << stats_2d_part.case2_cycles 
+              << " │ " << std::setw(12) << stats_3d_old.case2_cycles 
+              << " │ " << std::setw(12) << stats_3d_new.case2_cycles << " │\n";
+    std::cout << "    │ Case 3 (vert)   │ " << std::setw(12) << stats_2d.case3_cycles 
+              << " │ " << std::setw(12) << stats_2d_pipe.case3_cycles 
+              << " │ " << std::setw(12) << stats_2d_part.case3_cycles 
+              << " │ " << std::setw(12) << stats_3d_old.case3_cycles 
+              << " │ " << std::setw(12) << stats_3d_new.case3_cycles << " │\n";
+    std::cout << "    │ Case 4 (trail)  │ " << std::setw(12) << stats_2d.case4_cycles 
+              << " │ " << std::setw(12) << stats_2d_pipe.case4_cycles 
+              << " │ " << std::setw(12) << stats_2d_part.case4_cycles 
+              << " │ " << std::setw(12) << stats_3d_old.case4_cycles 
+              << " │ " << std::setw(12) << stats_3d_new.case4_cycles << " │\n";
+    
+    std::cout << "    ├─────────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n";
+    
+    // Case 4 reduction percentage
+    double case4_red_pipe = (stats_2d.case4_cycles > 0) ?
+        (100.0 * (1.0 - static_cast<double>(stats_2d_pipe.case4_cycles) / stats_2d.case4_cycles)) : 0.0;
+    double case4_red_part = (stats_2d.case4_cycles > 0) ?
+        (100.0 * (1.0 - static_cast<double>(stats_2d_part.case4_cycles) / stats_2d.case4_cycles)) : 0.0;
+    double case4_red_3d_old = (stats_2d.case4_cycles > 0) ?
+        (100.0 * (1.0 - static_cast<double>(stats_3d_old.case4_cycles) / stats_2d.case4_cycles)) : 0.0;
+    double case4_red_3d_new = (stats_2d.case4_cycles > 0) ?
+        (100.0 * (1.0 - static_cast<double>(stats_3d_new.case4_cycles) / stats_2d.case4_cycles)) : 0.0;
+    
+    std::cout << "    │ Case4 Reduction │ " << std::setw(12) << "baseline"
+              << " │ " << std::setw(10) << std::setprecision(1) << case4_red_pipe << "%"
+              << " │ " << std::setw(10) << case4_red_part << "%"
+              << " │ " << std::setw(10) << case4_red_3d_old << "%"
+              << " │ " << std::setw(10) << case4_red_3d_new << "% │\n";
+    
+    std::cout << "    ├─────────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤\n";
+    
+    // Utilization
+    double util_2d = (stats_2d.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_2d.total_pe_active_cycles / stats_2d.total_pe_possible_cycles) : 0.0;
+    double util_pipe = (stats_2d_pipe.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_2d_pipe.total_pe_active_cycles / stats_2d_pipe.total_pe_possible_cycles) : 0.0;
+    double util_part = (stats_2d_part.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_2d_part.total_pe_active_cycles / stats_2d_part.total_pe_possible_cycles) : 0.0;
+    double util_3d_old = (stats_3d_old.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_3d_old.total_pe_active_cycles / stats_3d_old.total_pe_possible_cycles) : 0.0;
+    double util_3d_new = (stats_3d_new.total_pe_possible_cycles > 0) ?
+        (100.0 * stats_3d_new.total_pe_active_cycles / stats_3d_new.total_pe_possible_cycles) : 0.0;
+    
+    std::cout << "    │ PE Utilization  │ " << std::setw(10) << std::setprecision(1) << util_2d << "% "
+              << "│ " << std::setw(10) << util_pipe << "% "
+              << "│ " << std::setw(10) << util_part << "% "
+              << "│ " << std::setw(10) << util_3d_old << "% "
+              << "│ " << std::setw(10) << util_3d_new << "% │\n";
+    
+    std::cout << "    └─────────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘\n\n";
+    
+    // TSV overhead analysis
+    std::cout << "TSV Overhead Analysis:\n";
+    std::cout << "    2D/2D-Pipelined/2D-Partitioned TSV cycles: 0 (no vertical stacking)\n";
+    std::cout << "    3D Old TSV transfer cycles: " << stats_3d_old.tsv_transfer_cycles << "\n";
+    std::cout << "    3D New TSV transfer cycles: " << stats_3d_new.tsv_transfer_cycles << "\n";
+    
+    double tsv_overhead_old = (stats_3d_old.total_cycles > 0) ?
+        (100.0 * stats_3d_old.tsv_transfer_cycles / stats_3d_old.total_cycles) : 0.0;
+    double tsv_overhead_new = (stats_3d_new.total_cycles > 0) ?
+        (100.0 * stats_3d_new.tsv_transfer_cycles / stats_3d_new.total_cycles) : 0.0;
+    std::cout << "    TSV overhead (Old/New):     " << std::setprecision(1) << tsv_overhead_old << "% / " << tsv_overhead_new << "%\n\n";
+    
+    // V1 vs V2 comparison
+    std::cout << "3D Case 4 V1 vs V2 Comparison:\n";
+    double v2_vs_v1_speedup = static_cast<double>(stats_3d_old.case4_cycles) / 
+                              std::max(stats_3d_new.case4_cycles, (uint64_t)1);
+    double case4_v2_improvement = (stats_3d_old.case4_cycles > 0) ?
+        (100.0 * (1.0 - static_cast<double>(stats_3d_new.case4_cycles) / stats_3d_old.case4_cycles)) : 0.0;
+    std::cout << "    V1 (arbitrary block assign):  " << stats_3d_old.case4_cycles << " cycles\n";
+    std::cout << "    V2 (row-parallel streaming):  " << stats_3d_new.case4_cycles << " cycles\n";
+    std::cout << "    V2 speedup over V1:           " << std::setprecision(2) << v2_vs_v1_speedup << "x";
+    if (case4_v2_improvement > 0) {
+        std::cout << " (" << std::setprecision(1) << case4_v2_improvement << "% reduction)\n\n";
+    } else {
+        std::cout << " (" << std::setprecision(1) << -case4_v2_improvement << "% increase)\n\n";
+    }
+    
+    // Find the best performer
+    uint64_t min_cycles = std::min({stats_2d.total_cycles, stats_2d_pipe.total_cycles, 
+                                    stats_2d_part.total_cycles, stats_3d_old.total_cycles,
+                                    stats_3d_new.total_cycles});
+    std::string best_arch;
+    if (min_cycles == stats_2d.total_cycles) best_arch = "2D Standard";
+    else if (min_cycles == stats_2d_pipe.total_cycles) best_arch = "2D Pipelined";
+    else if (min_cycles == stats_2d_part.total_cycles) best_arch = "2D Partitioned";
+    else if (min_cycles == stats_3d_old.total_cycles) best_arch = "3D Old (V1)";
+    else best_arch = "3D New (V2)";
+    
+    // Summary
+    /*
+    std::cout << "-----------------------------------------------------------------------------------------------------------------------------\n";
+    std::cout << "ANALYSIS:\n";
+    
+    std::cout << "    • BEST PERFORMER: " << best_arch << " with " << min_cycles << " cycles\n\n";
+    
+    if (speedup_pipe > 1.05) {
+        std::cout << "    • 2D Pipelined: " << std::setprecision(2) << speedup_pipe 
+                  << "x speedup via skewed systolic Case 4 (reduces Case 4 by " 
+                  << std::setprecision(1) << case4_red_pipe << "%).\n";
+    } else {
+        std::cout << "    • 2D Pipelined: minimal speedup (" << std::setprecision(2) << speedup_pipe 
+                  << "x) - pipelining overhead dominates for small matrices.\n";
+    }
+    
+    if (speedup_part > 1.05) {
+        std::cout << "    • 2D Partitioned: " << std::setprecision(2) << speedup_part 
+                  << "x speedup via 4-way spatial parallelism.\n";
+    } else if (speedup_part < 0.95) {
+        std::cout << "    • 2D Partitioned: " << std::setprecision(2) << (1.0/speedup_part)
+                  << "x SLOWER - smaller blocks increase block count overhead.\n";
+    } else {
+        std::cout << "    • 2D Partitioned: similar to 2D Standard (" << std::setprecision(2) << speedup_part << "x).\n";
+    }
+    
+    std::cout << "    • 3D V1→V2 improvement: " << std::setprecision(2) << v2_vs_v1_speedup 
+              << "x Case 4 speedup from row-parallel U streaming.\n";
+    
+    std::cout << "\n    Key Insight: V2's row-parallel design assigns different L blocks to layers\n";
+    std::cout << "    and streams the SAME U sequence to all layers simultaneously, maximizing\n";
+    std::cout << "    both spatial (across layers) and temporal (U streaming) parallelism.\n";
+    std::cout << "=============================================================================================================================\n";
+    */
+}
+
 int main(int argc, char* argv[]) {
     SimConfig config;
     uint32_t seed = 42;
@@ -319,6 +528,7 @@ int main(int argc, char* argv[]) {
     bool compare_mode = false;
     bool equal_pe_mode = false;
     bool compare_pipeline_mode = false;
+    bool compare_part_mode = false;
     uint32_t num_layers = 4;
     uint32_t tsv_latency = 1;
     
@@ -372,6 +582,9 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(argv[i], "-compare-pipeline") == 0) {
             compare_pipeline_mode = true;
+        }
+        else if (strcmp(argv[i], "-compare-part") == 0) {
+            compare_part_mode = true;
         }
         else if (strcmp(argv[i], "-equal-pe") == 0) {
             equal_pe_mode = true;
@@ -437,6 +650,114 @@ int main(int argc, char* argv[]) {
                                 config.matrix_size, config.pe_array_size, config.block_size);
         
         return (verified_seq && verified_pipe) ? 0 : 1;
+    }
+    
+    // 2D vs 2D-Partitioned vs 3D comparison mode
+    if (compare_part_mode) {
+        // Validate: PE array must be divisible by 2 for 4-way partitioning
+        if (config.pe_array_size < 4 || config.pe_array_size % 2 != 0) {
+            std::cerr << "Error: For -compare-part, PE array size must be >= 4 and even.\n";
+            std::cerr << "  Current: p = " << config.pe_array_size << "\n";
+            return 1;
+        }
+        
+        uint32_t pe_2d = config.pe_array_size;
+        uint32_t block_2d = config.block_size;
+        uint32_t pe_part = config.pe_array_size / 2;  // Each partition is (p/2) x (p/2)
+        uint32_t block_part = pe_part;  // Block size matches partition size
+        
+        // Validate matrix size is compatible with partitioned block size
+        if (config.matrix_size % block_part != 0) {
+            std::cerr << "Error: Matrix size must be divisible by partitioned block size.\n";
+            std::cerr << "  Matrix: " << config.matrix_size << ", Part block size: " << block_part << "\n";
+            return 1;
+        }
+        
+        std::cout << "========================================================================\n";
+        std::cout << "2D vs 2D-Pipelined vs 2D-Partitioned vs 3D (V1/V2) Comparison\n";
+        std::cout << "========================================================================\n\n";
+        
+        std::cout << "Configuration:\n";
+        std::cout << "  Matrix size:          " << config.matrix_size << " x " << config.matrix_size << "\n";
+        std::cout << "  Total PE budget:      " << (pe_2d * pe_2d) << " PEs\n";
+        std::cout << "  2D Standard:          " << pe_2d << " x " << pe_2d << " PEs, block " << block_2d << " (sequential Case 4)\n";
+        std::cout << "  2D Pipelined:         " << pe_2d << " x " << pe_2d << " PEs, block " << block_2d << " (skewed systolic)\n";
+        std::cout << "  2D Partitioned:       4 x (" << pe_part << " x " << pe_part << ") PEs, block " << block_part << " (row-parallel)\n";
+        std::cout << "  3D Old (V1):          " << pe_part << " x " << pe_part << " x 4 PEs, block " << block_part << " (arbitrary assign)\n";
+        std::cout << "  3D New (V2):          " << pe_part << " x " << pe_part << " x 4 PEs, block " << block_part << " (row-parallel)\n";
+        std::cout << "  TSV latency:          " << tsv_latency << " cycle(s)/hop\n\n";
+        
+        // 1. Run 2D Standard simulation (non-pipelined)
+        std::cout << "=== Running 2D Standard Simulation ===\n";
+        SimConfig config_2d = config;
+        config_2d.pipeline_enabled = false;
+        BlockLUSimulator sim_2d(config_2d);
+        sim_2d.initializeRandom(seed);
+        sim_2d.run();
+        bool verified_2d = sim_2d.verify();
+        std::cout << "Verification: " << (verified_2d ? "PASSED" : "FAILED") << "\n\n";
+        
+        // 2. Run 2D Pipelined simulation
+        std::cout << "=== Running 2D Pipelined Simulation ===\n";
+        SimConfig config_2d_pipe = config;
+        config_2d_pipe.pipeline_enabled = true;
+        BlockLUSimulator sim_2d_pipe(config_2d_pipe);
+        sim_2d_pipe.initializeRandom(seed);
+        sim_2d_pipe.run();
+        bool verified_2d_pipe = sim_2d_pipe.verify();
+        std::cout << "Verification: " << (verified_2d_pipe ? "PASSED" : "FAILED") << "\n\n";
+        
+        // 3. Run 2D Partitioned simulation (3D simulator with TSV=0, pipelined v2)
+        std::cout << "=== Running 2D Partitioned Simulation (4 regions, pipelined) ===\n";
+        SimConfig config_part_base;
+        config_part_base.matrix_size = config.matrix_size;
+        config_part_base.pe_array_size = pe_part;
+        config_part_base.block_size = block_part;
+        config_part_base.mac_latency = config.mac_latency;
+        config_part_base.div_latency = config.div_latency;
+        config_part_base.mem_load_delay = config.mem_load_delay;
+        config_part_base.mem_write_delay = config.mem_write_delay;
+        config_part_base.verbose = config.verbose;
+        config_part_base.pipeline_enabled = true;  // Enable pipelining within each partition
+        
+        SimConfig3D config_part(config_part_base);
+        config_part.num_layers = 4;
+        config_part.tsv_latency = 0;  // No TSV overhead for 2D partitioned
+        config_part.pipeline_version = 2;  // Use row-parallel (v2)
+        BlockLUSimulator3D sim_part(config_part);
+        sim_part.run();
+        bool verified_part = sim_part.verify();
+        std::cout << "Verification: " << (verified_part ? "PASSED" : "FAILED") << "\n\n";
+        
+        // 4. Run 3D simulation with V1 (old - arbitrary block assignment)
+        std::cout << "=== Running 3D Old (V1) Simulation (Z=4, TSV=" << tsv_latency << ", arb. assign) ===\n";
+        SimConfig3D config_3d_old(config_part_base);
+        config_3d_old.num_layers = 4;
+        config_3d_old.tsv_latency = tsv_latency;
+        config_3d_old.pipeline_version = 1;  // V1: arbitrary block assignment
+        BlockLUSimulator3D sim_3d_old(config_3d_old);
+        sim_3d_old.run();
+        bool verified_3d_old = sim_3d_old.verify();
+        std::cout << "Verification: " << (verified_3d_old ? "PASSED" : "FAILED") << "\n\n";
+        
+        // 5. Run 3D simulation with V2 (new - row-parallel streaming)
+        std::cout << "=== Running 3D New (V2) Simulation (Z=4, TSV=" << tsv_latency << ", row-parallel) ===\n";
+        SimConfig3D config_3d_new(config_part_base);
+        config_3d_new.num_layers = 4;
+        config_3d_new.tsv_latency = tsv_latency;
+        config_3d_new.pipeline_version = 2;  // V2: row-parallel streaming
+        BlockLUSimulator3D sim_3d_new(config_3d_new);
+        sim_3d_new.run();
+        bool verified_3d_new = sim_3d_new.verify();
+        std::cout << "Verification: " << (verified_3d_new ? "PASSED" : "FAILED") << "\n";
+        
+        // Print comparison
+        printPartitionedComparison(sim_2d.getStats(), sim_2d_pipe.getStats(),
+                                   sim_part.getStats(), sim_3d_old.getStats(), sim_3d_new.getStats(),
+                                   config.matrix_size, pe_2d, pe_part, block_2d, block_part,
+                                   tsv_latency);
+        
+        return (verified_2d && verified_2d_pipe && verified_part && verified_3d_old && verified_3d_new) ? 0 : 1;
     }
     
     // Equal PE comparison mode

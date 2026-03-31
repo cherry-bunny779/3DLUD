@@ -88,3 +88,10 @@ test_pipeline: $(TARGET)
 
 compare_pipeline: $(TARGET)
 	./$(TARGET) -n 32 -p 8 -b 8 -compare-pipeline -z 4
+
+# Compare 2D vs 2D-Partitioned vs 3D
+compare_part: $(TARGET)
+	./$(TARGET) -n 64 -p 8 -b 8 -compare-part
+
+compare_part_large: $(TARGET)
+	./$(TARGET) -n 128 -p 16 -b 16 -compare-part

@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <map>
 
 // Helper: Convert flat vector to 2D block
 static std::vector<std::vector<float>> flatTo2D(const std::vector<float>& flat, uint32_t b) {
@@ -721,6 +722,286 @@ void BlockLUSimulator3D::executeCase4_block(uint32_t block_k, uint32_t num_block
     }
 }
 
+void BlockLUSimulator3D::executeCase4_block_pipelined_v1(uint32_t block_k, uint32_t num_blocks) {
+    // LEGACY V1: Arbitrary block-to-layer assignment with pipelining within rows
+    // Kept for comparison purposes
+    //
+    // Pipelined Case 4: Use skewed systolic timing within each layer
+    // Blocks assigned to the same layer with the same row index (i) are pipelined
+    // 
+    // Timing model (classic systolic skewing):
+    // - PE[row,col] receives data at cycle (row + col)
+    // - Single block latency: 3*b - 2 cycles
+    // - Pipeline interval: b cycles between consecutive blocks in a row
+    
+    uint64_t start_cycle = pe_array.current_cycle;
+    uint32_t b = config.block_size;
+    uint32_t trailing_size = num_blocks - block_k - 1;
+    uint32_t total_trailing = trailing_size * trailing_size;
+    
+    if (total_trailing == 0) return;
+    
+    // Get all L column blocks and U row blocks needed
+    std::vector<std::vector<std::vector<float>>> L_col_blocks(trailing_size);
+    std::vector<std::vector<std::vector<float>>> U_row_blocks(trailing_size);
+    
+    for (uint32_t idx = 0; idx < trailing_size; idx++) {
+        uint32_t i = block_k + 1 + idx;
+        auto L_flat = memory.getBlockL(i, block_k);
+        L_col_blocks[idx] = flatTo2D(L_flat, b);
+        
+        auto U_flat = memory.getBlockU(block_k, i);
+        U_row_blocks[idx] = flatTo2D(U_flat, b);
+    }
+    
+    // Broadcast L and U blocks to all layers (TSV overhead)
+    uint64_t broadcast_cycles = 0;
+    for (uint32_t z = 1; z < config.num_layers; z++) {
+        uint64_t latency = config.getTSVLatency(0, z);
+        broadcast_cycles = std::max(broadcast_cycles, latency);
+    }
+    stats.tsv_transfers += (config.num_layers - 1) * trailing_size * 2;
+    stats.tsv_transfer_cycles += broadcast_cycles;
+    
+    for (uint64_t i = 0; i < broadcast_cycles; i++) {
+        pe_array.tick();
+    }
+    
+    // Assign trailing blocks to layers and group by row within each layer
+    // layer_row_blocks[z][i_idx] = list of j indices for row i on layer z
+    std::vector<std::map<uint32_t, std::vector<uint32_t>>> layer_row_blocks(config.num_layers);
+    uint32_t block_idx = 0;
+    
+    for (uint32_t i = block_k + 1; i < num_blocks; i++) {
+        for (uint32_t j = block_k + 1; j < num_blocks; j++) {
+            uint32_t z = block_idx % config.num_layers;
+            uint32_t i_idx = i - block_k - 1;
+            layer_row_blocks[z][i_idx].push_back(j);
+            block_idx++;
+        }
+    }
+    
+    // Calculate pipelined cycle count for each layer
+    // Each layer processes its assigned rows; rows are processed sequentially,
+    // but blocks within a row are pipelined
+    uint64_t max_layer_cycles = 0;
+    
+    for (uint32_t z = 0; z < config.num_layers; z++) {
+        if (layer_row_blocks[z].empty()) continue;
+        
+        uint64_t layer_cycles = 0;
+        
+        for (auto& [i_idx, j_list] : layer_row_blocks[z]) {
+            // Memory load for first block in row (overlapped with prev row's compute for later rows)
+            layer_cycles += config.mem_load_delay;
+            
+            // Pipelined execution of all blocks in this row
+            // N blocks take: (N-1)*b + single_block_latency cycles
+            uint32_t n_blocks = j_list.size();
+            uint64_t single_block_latency = 3 * b - 2;  // Skewed systolic timing
+            uint64_t row_compute_cycles = (n_blocks > 1) ? 
+                ((n_blocks - 1) * b + single_block_latency) : single_block_latency;
+            layer_cycles += row_compute_cycles;
+            
+            // Memory write (can overlap with next row's load)
+            layer_cycles += config.mem_write_delay;
+        }
+        
+        max_layer_cycles = std::max(max_layer_cycles, layer_cycles);
+    }
+    
+    // All layers execute in parallel, so total time is max across layers
+    // Add the cycles to the PE array
+    for (uint64_t i = 0; i < max_layer_cycles; i++) {
+        pe_array.tick();
+    }
+    
+    // Actually compute the block values for correctness
+    // (The timing is already accounted for above)
+    for (uint32_t z = 0; z < config.num_layers; z++) {
+        for (auto& [i_idx, j_list] : layer_row_blocks[z]) {
+            uint32_t i = block_k + 1 + i_idx;
+            auto& L_block = L_col_blocks[i_idx];
+            
+            for (uint32_t j : j_list) {
+                uint32_t j_idx = j - block_k - 1;
+                auto& U_block = U_row_blocks[j_idx];
+                
+                // Load A block
+                auto A_flat = memory.getBlockA(i, j);
+                auto A_block = flatTo2D(A_flat, b);
+                
+                // Compute A = A - L * U (outer product)
+                for (uint32_t k = 0; k < b; k++) {
+                    for (uint32_t row = 0; row < b; row++) {
+                        for (uint32_t col = 0; col < b; col++) {
+                            A_block[row][col] -= L_block[row][k] * U_block[k][col];
+                            stats.mac_operations++;
+                        }
+                    }
+                }
+                
+                // Store result
+                memory.setBlockA(i, j, toFlat(A_block, b));
+            }
+        }
+    }
+    
+    stats.case4_cycles += (pe_array.current_cycle - start_cycle);
+    
+    if (config.verbose) {
+        std::cout << "Case 4 [k=" << block_k << "] (pipelined-v1): "
+                  << (pe_array.current_cycle - start_cycle) << " cycles"
+                  << " (" << total_trailing << " blocks across "
+                  << std::min(total_trailing, config.num_layers) << " layers)\n";
+    }
+}
+
+void BlockLUSimulator3D::executeCase4_block_pipelined(uint32_t block_k, uint32_t num_blocks) {
+    // NEW DESIGN: Spatial + Temporal Pipelining
+    //
+    // Key insight: Each trailing update A^(i,j) -= L^(i,k) × U^(k,j) is independent.
+    //
+    // SPATIAL PARALLELISM (across layers):
+    //   - Assign different ROW indices (i) to different layers
+    //   - Layer z processes rows: i = k+1+z, k+1+z+Z, k+1+z+2Z, ...
+    //   - Each layer has a DIFFERENT L block stationary
+    //
+    // TEMPORAL PIPELINING (within each layer):
+    //   - Stream the SAME sequence of U blocks to ALL layers simultaneously
+    //   - U^(k, k+1), U^(k, k+2), ..., U^(k, P-1) streamed with skewed timing
+    //   - Each layer uses its stationary L with the streaming U blocks
+    //
+    // Result: All layers compute in parallel, each producing a full row of results
+    //
+    // Timing model:
+    //   - L loading: One-time load per row assignment (b×b elements)
+    //   - U streaming: Skewed entry, columns enter at offset j
+    //   - Single block latency: 3b-2 cycles
+    //   - Pipeline interval: b cycles between consecutive U blocks
+    //   - N U blocks pipelined: (N-1)×b + (3b-2) = (N+2)b - 2 cycles
+    
+    uint64_t start_cycle = pe_array.current_cycle;
+    uint32_t b = config.block_size;
+    uint32_t trailing_size = num_blocks - block_k - 1;  // Number of rows/cols in trailing matrix
+    
+    if (trailing_size == 0) return;
+    
+    // Preload all L column blocks and U row blocks
+    std::vector<std::vector<std::vector<float>>> L_col_blocks(trailing_size);  // L^(k+1+idx, k)
+    std::vector<std::vector<std::vector<float>>> U_row_blocks(trailing_size);  // U^(k, k+1+idx)
+    
+    for (uint32_t idx = 0; idx < trailing_size; idx++) {
+        uint32_t i = block_k + 1 + idx;
+        auto L_flat = memory.getBlockL(i, block_k);
+        L_col_blocks[idx] = flatTo2D(L_flat, b);
+        
+        auto U_flat = memory.getBlockU(block_k, i);
+        U_row_blocks[idx] = flatTo2D(U_flat, b);
+    }
+    
+    // Assign rows to layers in round-robin fashion
+    // layer_rows[z] = list of row indices (0-based into trailing matrix) assigned to layer z
+    std::vector<std::vector<uint32_t>> layer_rows(config.num_layers);
+    for (uint32_t row_idx = 0; row_idx < trailing_size; row_idx++) {
+        uint32_t z = row_idx % config.num_layers;
+        layer_rows[z].push_back(row_idx);
+    }
+    
+    // Count active layers
+    uint32_t active_layers = std::min(trailing_size, config.num_layers);
+    
+    // TSV broadcast overhead for U blocks to all layers
+    // All layers receive the same U block sequence
+    uint64_t broadcast_cycles = 0;
+    for (uint32_t z = 1; z < active_layers; z++) {
+        uint64_t latency = config.getTSVLatency(0, z);
+        broadcast_cycles = std::max(broadcast_cycles, latency);
+    }
+    stats.tsv_transfers += active_layers * trailing_size;  // U blocks broadcast
+    stats.tsv_transfer_cycles += broadcast_cycles;
+    
+    for (uint64_t i = 0; i < broadcast_cycles; i++) {
+        pe_array.tick();
+    }
+    
+    // Calculate timing for each layer
+    // All layers stream the SAME U block sequence, but may have different numbers of L rows
+    uint64_t max_layer_cycles = 0;
+    
+    // U streaming parameters (same for all layers)
+    uint64_t single_block_latency = 3 * b - 2;  // Skewed systolic timing for one L×U
+    uint64_t u_stream_cycles = (trailing_size > 1) ? 
+        ((trailing_size - 1) * b + single_block_latency) : single_block_latency;
+    
+    for (uint32_t z = 0; z < config.num_layers; z++) {
+        if (layer_rows[z].empty()) continue;
+        
+        uint32_t num_row_batches = layer_rows[z].size();
+        uint64_t layer_cycles = 0;
+        
+        // For each row assigned to this layer:
+        // 1. Load L block for this row (mem_load_delay)
+        // 2. Stream ALL U blocks through (u_stream_cycles) 
+        // 3. Store results for this row (mem_write_delay)
+        // 
+        // Rows within a layer are processed SEQUENTIALLY (different L blocks needed)
+        for (uint32_t batch = 0; batch < num_row_batches; batch++) {
+            layer_cycles += config.mem_load_delay;    // Load L and initial A values
+            layer_cycles += u_stream_cycles;           // Stream all U blocks
+            layer_cycles += config.mem_write_delay;    // Store results
+        }
+        
+        max_layer_cycles = std::max(max_layer_cycles, layer_cycles);
+    }
+    
+    // All layers execute in parallel, so total time is max across layers
+    for (uint64_t i = 0; i < max_layer_cycles; i++) {
+        pe_array.tick();
+    }
+    
+    // Actually compute the block values for correctness
+    for (uint32_t z = 0; z < config.num_layers; z++) {
+        for (uint32_t row_idx : layer_rows[z]) {
+            uint32_t i = block_k + 1 + row_idx;
+            auto& L_block = L_col_blocks[row_idx];
+            
+            // This layer processes row i with ALL U blocks
+            for (uint32_t col_idx = 0; col_idx < trailing_size; col_idx++) {
+                uint32_t j = block_k + 1 + col_idx;
+                auto& U_block = U_row_blocks[col_idx];
+                
+                // Load A block
+                auto A_flat = memory.getBlockA(i, j);
+                auto A_block = flatTo2D(A_flat, b);
+                
+                // Compute A = A - L * U
+                for (uint32_t k = 0; k < b; k++) {
+                    for (uint32_t row = 0; row < b; row++) {
+                        for (uint32_t col = 0; col < b; col++) {
+                            A_block[row][col] -= L_block[row][k] * U_block[k][col];
+                            stats.mac_operations++;
+                        }
+                    }
+                }
+                
+                // Store result
+                memory.setBlockA(i, j, toFlat(A_block, b));
+            }
+        }
+    }
+    
+    stats.case4_cycles += (pe_array.current_cycle - start_cycle);
+    
+    if (config.verbose) {
+        std::cout << "Case 4 [k=" << block_k << "] (pipelined-v2): "
+                  << (pe_array.current_cycle - start_cycle) << " cycles"
+                  << " (" << trailing_size << " rows × " << trailing_size << " cols, "
+                  << active_layers << " layers active, "
+                  << "U stream: " << u_stream_cycles << " cycles)\n";
+    }
+}
+
 // =============================================================================
 // ROW DISTRIBUTION SCHEME (Legacy - kept but unused)
 // =============================================================================
@@ -1087,7 +1368,15 @@ void BlockLUSimulator3D::run() {
         executeCase3_block(k, num_blocks);
         
         // Case 4: All trailing blocks in parallel
-        executeCase4_block(k, num_blocks);
+        if (config.pipeline_enabled) {
+            if (config.pipeline_version == 1) {
+                executeCase4_block_pipelined_v1(k, num_blocks);
+            } else {
+                executeCase4_block_pipelined(k, num_blocks);  // v2 (default)
+            }
+        } else {
+            executeCase4_block(k, num_blocks);
+        }
     }
     
     // Collect final statistics

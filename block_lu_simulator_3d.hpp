@@ -8,14 +8,26 @@
 /**
  * 3D Block LU Decomposition Simulator
  * 
- * Implements LU decomposition using a 3D systolic array architecture
- * with row distribution across Z layers for parallelization.
+ * Implements LU decomposition using a 3D systolic array architecture.
  * 
- * Acceleration strategy:
- * - Case 1 (diagonal): Limited parallelization due to pivot dependencies
- * - Case 2 (horizontal U): Row distribution across layers
- * - Case 3 (vertical L): Row distribution across layers (best speedup)
- * - Case 4 (trailing): Row distribution across layers
+ * Two mapping schemes are available:
+ * 
+ * 1. ROW DISTRIBUTION (legacy, unused):
+ *    - Distributes rows within a single block across Z layers
+ *    - Low PE utilization when b/Z is small
+ *    - Methods suffixed with _row
+ * 
+ * 2. BLOCK DISTRIBUTION (active):
+ *    - Distributes entire blocks across Z layers
+ *    - Exploits inter-block independence in Cases 2, 3, 4
+ *    - Full PE array utilization per layer
+ *    - Methods suffixed with _block
+ * 
+ * Acceleration strategy (Block Distribution):
+ * - Case 1 (diagonal): Execute on Layer 0 only (pivot dependencies)
+ * - Case 2 (horizontal U): Different U[k,j] blocks on different layers
+ * - Case 3 (vertical L): Different L[i,k] blocks on different layers
+ * - Case 4 (trailing): Different A[i,j] blocks on different layers
  */
 class BlockLUSimulator3D {
 public:
@@ -50,41 +62,101 @@ public:
     void printResults();
     
 private:
+    // =========================================================================
+    // BLOCK DISTRIBUTION SCHEME (Active)
+    // =========================================================================
+    
     // Execute Case 1: Diagonal block LU decomposition
-    // Limited 3D benefit due to sequential pivot dependencies
-    void executeCase1(uint32_t block_k);
+    // Executes on Layer 0 only due to sequential pivot dependencies
+    void executeCase1_block(uint32_t block_k);
     
-    // Execute Case 2: Horizontal U block update
-    // U[(k-1)*b:k*b, (j-1)*b:j*b] = solve using L from Case 1
-    // Row distribution: different rows processed on different layers
-    void executeCase2(uint32_t block_k, uint32_t block_j);
+    // Execute Case 2: All horizontal U blocks in parallel
+    // Each layer computes a different U[k,j] block
+    void executeCase2_block(uint32_t block_k, uint32_t num_blocks);
     
-    // Execute Case 3: Vertical L block update
-    // L[(i-1)*b:i*b, (k-1)*b:k*b] = solve using U from Case 1
-    // Row distribution: different rows of L processed on different layers
-    void executeCase3(uint32_t block_k, uint32_t block_i);
+    // Execute Case 3: All vertical L blocks in parallel
+    // Each layer computes a different L[i,k] block
+    void executeCase3_block(uint32_t block_k, uint32_t num_blocks);
     
-    // Execute Case 4: Trailing matrix Schur complement update
-    // A = A - L * U (outer product subtraction)
-    // Row distribution: different rows of A processed on different layers
-    void executeCase4(uint32_t block_k, uint32_t block_i, uint32_t block_j);
+    // Execute Case 4: All trailing blocks in parallel
+    // Each layer computes different A[i,j] blocks
+    void executeCase4_block(uint32_t block_k, uint32_t num_blocks);
     
-    // Helper: Broadcast U row to all layers via TSV
+    // Execute Case 4 with pipelined skewed systolic timing within each layer
+    // V1 (legacy): Arbitrary block-to-layer assignment, pipeline within rows per layer
+    void executeCase4_block_pipelined_v1(uint32_t block_k, uint32_t num_blocks);
+    
+    // Execute Case 4 with spatial + temporal pipelining (ACTIVE)
+    // - Different L blocks spread across layers (spatial parallelism)
+    // - Same U block sequence streams to ALL layers simultaneously
+    // - All layers compute in parallel: layer z uses L^(k+1+z, k) with all U^(k, j) blocks
+    void executeCase4_block_pipelined(uint32_t block_k, uint32_t num_blocks);
+    
+    // Helper: Execute single horizontal U block on a specific layer
+    void executeSingleCase2OnLayer(uint32_t layer, uint32_t block_k, uint32_t block_j,
+                                   const std::vector<std::vector<float>>& L_diag);
+    
+    // Helper: Execute single vertical L block on a specific layer
+    void executeSingleCase3OnLayer(uint32_t layer, uint32_t block_k, uint32_t block_i,
+                                   const std::vector<std::vector<float>>& U_diag);
+    
+    // Helper: Execute single trailing block update on a specific layer
+    void executeSingleCase4OnLayer(uint32_t layer, uint32_t block_k, 
+                                   uint32_t block_i, uint32_t block_j);
+    
+    // =========================================================================
+    // ROW DISTRIBUTION SCHEME (Legacy - kept but unused)
+    // =========================================================================
+    
+    // Execute Case 1: Diagonal block LU decomposition (row distribution)
+    void executeCase1_row(uint32_t block_k);
+    
+    // Execute Case 2: Horizontal U block update (row distribution)
+    void executeCase2_row(uint32_t block_k, uint32_t block_j);
+    
+    // Execute Case 3: Vertical L block update (row distribution)
+    void executeCase3_row(uint32_t block_k, uint32_t block_i);
+    
+    // Execute Case 4: Trailing matrix update (row distribution)
+    void executeCase4_row(uint32_t block_k, uint32_t block_i, uint32_t block_j);
+    
+    // =========================================================================
+    // HELPER METHODS
+    // =========================================================================
+    
+    // Broadcast U row to all layers via TSV
     uint64_t broadcastURowToAllLayers(const std::vector<float>& u_row);
     
-    // Helper: Broadcast data block to all layers
+    // Broadcast data block to all layers
     uint64_t broadcastBlockToAllLayers(const std::vector<std::vector<float>>& block);
     
-    // Helper: Get row indices assigned to a specific layer
+    // Broadcast block to specific layer
+    uint64_t broadcastBlockToLayer(uint32_t dst_layer, 
+                                   const std::vector<std::vector<float>>& block);
+    
+    // Get row indices assigned to a specific layer (for row distribution)
     std::vector<uint32_t> getLayerRows(uint32_t layer, uint32_t total_rows);
     
-    // Helper: Load block data to specific layer's PEs
+    // Load block data to specific layer's PEs
     void loadBlockToLayer(uint32_t layer, const std::vector<std::vector<float>>& block,
                           uint32_t start_row, uint32_t num_rows);
     
-    // Helper: Write results from layer's PEs to memory
+    // Load full block to specific layer's PEs
+    void loadFullBlockToLayer(uint32_t layer, const std::vector<std::vector<float>>& block);
+    
+    // Write results from layer's PEs to memory
     void writeBlockFromLayer(uint32_t layer, std::vector<std::vector<float>>& block,
                              uint32_t start_row, uint32_t num_rows);
+    
+    // Write full block from layer's PEs
+    void writeFullBlockFromLayer(uint32_t layer, std::vector<std::vector<float>>& block);
+    
+    // Get blocks assigned to a specific layer for block distribution
+    std::vector<uint32_t> getLayerBlockIndices(uint32_t layer, uint32_t total_blocks);
+    
+    // Get 2D block indices assigned to a specific layer for Case 4
+    std::vector<std::pair<uint32_t, uint32_t>> getLayerTrailingBlocks(
+        uint32_t layer, uint32_t block_k, uint32_t num_blocks);
 };
 
 #endif // BLOCK_LU_SIMULATOR_3D_HPP
