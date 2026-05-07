@@ -37,6 +37,12 @@ void printUsage(const char* program_name) {
     std::cout << "  -3d            Enable 3D simulation mode\n";
     std::cout << "  -z <layers>    Number of Z layers (default: 4)\n";
     std::cout << "  -tsv <cycles>  TSV latency per hop in cycles (default: 1)\n\n";
+    std::cout << "Bandwidth Contention Model (Case 4 only, used in -compare-part):\n";
+    std::cout << "  -contention <m>   Enable bandwidth contention model with mode m:\n";
+    std::cout << "                      0 = ideal      (no slowdown, legacy behavior)\n";
+    std::cout << "                      1 = realistic  (U broadcast free, L/A serialized)\n";
+    std::cout << "                      2 = pessimistic (full per-region serialization)\n";
+    std::cout << "                    If omitted, model is disabled (slowdown = 1.0x).\n\n";
     std::cout << "Comparison Modes:\n";
     std::cout << "  -compare          Run both 2D and 3D with same PE array, print comparison\n";
     std::cout << "  -compare-pipeline Compare pipelined vs non-pipelined 2D execution\n";
@@ -531,6 +537,8 @@ int main(int argc, char* argv[]) {
     bool compare_part_mode = false;
     uint32_t num_layers = 4;
     uint32_t tsv_latency = 1;
+    uint32_t contention_mode = 1;       // 0=ideal, 1=realistic (default), 2=pessimistic
+    bool     contention_mode_set = false;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -576,6 +584,15 @@ int main(int argc, char* argv[]) {
         else if (strcmp(argv[i], "-tsv") == 0 && i + 1 < argc) {
             tsv_latency = std::atoi(argv[++i]);
             use_3d = true;  // Implied
+        }
+        else if (strcmp(argv[i], "-contention") == 0 && i + 1 < argc) {
+            int mode = std::atoi(argv[++i]);
+            if (mode < 0 || mode > 2) {
+                std::cerr << "Error: -contention must be 0 (ideal), 1 (realistic), or 2 (pessimistic).\n";
+                return 1;
+            }
+            contention_mode = static_cast<uint32_t>(mode);
+            contention_mode_set = true;
         }
         else if (strcmp(argv[i], "-compare") == 0) {
             compare_mode = true;
@@ -724,6 +741,11 @@ int main(int argc, char* argv[]) {
         config_part.num_layers = 4;
         config_part.tsv_latency = 0;  // No TSV overhead for 2D partitioned
         config_part.pipeline_version = 2;  // Use row-parallel (v2)
+        // Bandwidth contention model: 2D Partitioned has a shared memory bus
+        config_part.is_2d_partitioned = true;
+        config_part.enable_bandwidth_model = contention_mode_set;
+        config_part.contention_mode = contention_mode;
+        config_part.memory_bandwidth_per_layer = config_part_base.block_size;
         BlockLUSimulator3D sim_part(config_part);
         sim_part.run();
         bool verified_part = sim_part.verify();
@@ -735,6 +757,11 @@ int main(int argc, char* argv[]) {
         config_3d_old.num_layers = 4;
         config_3d_old.tsv_latency = tsv_latency;
         config_3d_old.pipeline_version = 1;  // V1: arbitrary block assignment
+        // 3D: independent per-layer ports, contention model gives a flat 3x slowdown
+        config_3d_old.is_2d_partitioned = false;
+        config_3d_old.enable_bandwidth_model = contention_mode_set;
+        config_3d_old.contention_mode = contention_mode;
+        config_3d_old.memory_bandwidth_per_layer = config_part_base.block_size;
         BlockLUSimulator3D sim_3d_old(config_3d_old);
         sim_3d_old.run();
         bool verified_3d_old = sim_3d_old.verify();
@@ -746,6 +773,11 @@ int main(int argc, char* argv[]) {
         config_3d_new.num_layers = 4;
         config_3d_new.tsv_latency = tsv_latency;
         config_3d_new.pipeline_version = 2;  // V2: row-parallel streaming
+        // 3D: independent per-layer ports, contention model gives a flat 3x slowdown
+        config_3d_new.is_2d_partitioned = false;
+        config_3d_new.enable_bandwidth_model = contention_mode_set;
+        config_3d_new.contention_mode = contention_mode;
+        config_3d_new.memory_bandwidth_per_layer = config_part_base.block_size;
         BlockLUSimulator3D sim_3d_new(config_3d_new);
         sim_3d_new.run();
         bool verified_3d_new = sim_3d_new.verify();

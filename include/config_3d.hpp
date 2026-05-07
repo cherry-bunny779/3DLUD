@@ -14,31 +14,115 @@ struct SimConfig3D : public SimConfig {
     uint32_t num_layers;        // Z dimension (number of stacked layers)
     uint32_t tsv_latency;       // Latency per TSV hop (cycles)
     uint32_t pipeline_version;  // 1 = v1 (arbitrary block assignment), 2 = v2 (row-parallel)
-    
+
+    // ========================================================================
+    // Bandwidth contention model
+    // ========================================================================
+    //
+    // The 2D Partitioned architecture has 4 PE regions sharing a SINGLE memory
+    // bus, so when multiple regions try to load/store simultaneously they must
+    // serialize. The 3D architecture gives each layer its own memory port, so
+    // there is no contention between layers (only TSV overhead for U broadcast).
+    //
+    // We model this by multiplying Case 4's per-layer cycles by a slowdown
+    // factor derived from (memory demand) / (memory supply). See the
+    // getBandwidthSlowdownFactor() method below for the demand/supply formulas.
+    //
+    // Toggles:
+    //   is_2d_partitioned          - architecture flag (set by compare-part)
+    //   enable_bandwidth_model     - master switch (false => slowdown is always 1.0)
+    //   memory_bandwidth_per_layer - elements/cycle per layer (informational)
+    //   contention_mode            - 0=ideal, 1=realistic (default), 2=pessimistic
+    bool     is_2d_partitioned;
+    bool     enable_bandwidth_model;
+    uint32_t memory_bandwidth_per_layer;
+    uint32_t contention_mode;
+
     // Default constructor
     SimConfig3D()
         : SimConfig()
         , num_layers(4)         // Default: 4 layers (as in paper)
         , tsv_latency(1)        // Default: 1 cycle per hop
         , pipeline_version(2)   // Default: v2 (new row-parallel design)
+        , is_2d_partitioned(false)
+        , enable_bandwidth_model(false)  // Off by default for backward compatibility
+        , memory_bandwidth_per_layer(0)  // 0 = use block_size as default
+        , contention_mode(1)             // Realistic contention by default
     {}
-    
+
     // Constructor from base config
     SimConfig3D(const SimConfig& base)
         : SimConfig(base)
         , num_layers(4)
         , tsv_latency(1)
         , pipeline_version(2)
+        , is_2d_partitioned(false)
+        , enable_bandwidth_model(false)
+        , memory_bandwidth_per_layer(0)
+        , contention_mode(1)
     {}
     
     // Validation (extends base validation)
     bool validate() const {
         if (!SimConfig::validate()) return false;
         if (num_layers == 0) return false;
+        if (contention_mode > 2) return false;
         // num_layers doesn't need to be power of 2
         // Algorithm handles uneven distribution
         return true;
     }
+
+    // ------------------------------------------------------------------------
+    // Bandwidth contention slowdown factor for Case 4
+    // ------------------------------------------------------------------------
+    // Returns a multiplier applied to per-layer Case 4 cycle counts.
+    //
+    // Demand/supply analysis (b = block_size):
+    //
+    //   2D Partitioned: a single ~2b-wide memory edge serves all 4 regions.
+    //     Per region during streaming: A_in (b) + A_out (b) = 2b.
+    //     U is read once and wire-distributed (free under realistic mode).
+    //     - Realistic (mode 1) demand:    R * 2b + b   /  2b
+    //     - Pessimistic (mode 2) demand:  R * 3b       /  2b   (no U broadcast)
+    //   where R = num_active_regions.
+    //
+    //   3D New V2: each layer has its own b-wide port.
+    //     Per layer: A_in + A_out + (U via TSV from layer 0) = 3b on layer 0,
+    //     2b on the rest. Synchronization on the U stream pegs everyone at the
+    //     layer-0 ratio, so we report a flat 3.0x slowdown (still beats 2D
+    //     because 4 layers run in parallel).
+    //
+    // Mode 0 returns 1.0 unconditionally (legacy / ideal-broadcast behavior).
+    double getBandwidthSlowdownFactor(uint32_t num_active_regions) const {
+        if (!enable_bandwidth_model || num_active_regions == 0) {
+            return 1.0;
+        }
+        if (contention_mode == 0) {
+            return 1.0;  // Ideal: no contention
+        }
+
+        const uint32_t b = block_size;
+
+        if (is_2d_partitioned) {
+            const uint32_t total_bandwidth = 2 * b;  // 2D shared bus
+            uint32_t demand = 0;
+            if (contention_mode == 1) {
+                // Realistic: U broadcast free, L/A per-region serialized
+                demand = num_active_regions * 2 * b + b;
+            } else {
+                // Pessimistic (mode 2): full per-region serialization
+                demand = num_active_regions * 3 * b;
+            }
+            const double slowdown =
+                static_cast<double>(demand) / static_cast<double>(total_bandwidth);
+            return slowdown < 1.0 ? 1.0 : slowdown;
+        }
+
+        // 3D path: independent per-layer ports, but layer 0 is the U source so
+        // its 3b/b = 3 ratio dominates synchronization.
+        return 3.0;
+    }
+    // ------------------------------------------------------------------------
     
     // Get TSV latency from layer src to layer dst
     uint32_t getTSVLatency(uint32_t src_layer, uint32_t dst_layer) const {

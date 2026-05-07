@@ -933,7 +933,11 @@ void BlockLUSimulator3D::executeCase4_block_pipelined(uint32_t block_k, uint32_t
     uint64_t single_block_latency = 3 * b - 2;  // Skewed systolic timing for one L×U
     uint64_t u_stream_cycles = (trailing_size > 1) ? 
         ((trailing_size - 1) * b + single_block_latency) : single_block_latency;
-    
+
+    // Bandwidth contention slowdown (applies to streaming portion of each layer's work)
+    // See SimConfig3D::getBandwidthSlowdownFactor for the demand/supply derivation.
+    const double bw_slowdown = config.getBandwidthSlowdownFactor(active_layers);
+
     for (uint32_t z = 0; z < config.num_layers; z++) {
         if (layer_rows[z].empty()) continue;
         
@@ -942,13 +946,14 @@ void BlockLUSimulator3D::executeCase4_block_pipelined(uint32_t block_k, uint32_t
         
         // For each row assigned to this layer:
         // 1. Load L block for this row (mem_load_delay)
-        // 2. Stream ALL U blocks through (u_stream_cycles) 
+        // 2. Stream ALL U blocks through (u_stream_cycles, scaled by bandwidth slowdown)
         // 3. Store results for this row (mem_write_delay)
         // 
         // Rows within a layer are processed SEQUENTIALLY (different L blocks needed)
         for (uint32_t batch = 0; batch < num_row_batches; batch++) {
             layer_cycles += config.mem_load_delay;    // Load L and initial A values
-            layer_cycles += u_stream_cycles;           // Stream all U blocks
+            layer_cycles += static_cast<uint64_t>(
+                static_cast<double>(u_stream_cycles) * bw_slowdown);  // Streaming, with contention
             layer_cycles += config.mem_write_delay;    // Store results
         }
         
@@ -998,7 +1003,8 @@ void BlockLUSimulator3D::executeCase4_block_pipelined(uint32_t block_k, uint32_t
                   << (pe_array.current_cycle - start_cycle) << " cycles"
                   << " (" << trailing_size << " rows × " << trailing_size << " cols, "
                   << active_layers << " layers active, "
-                  << "U stream: " << u_stream_cycles << " cycles)\n";
+                  << "U stream: " << u_stream_cycles << " cycles"
+                  << ", BW slowdown: " << bw_slowdown << "x)\n";
     }
 }
 
